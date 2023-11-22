@@ -30,7 +30,6 @@ if (-not (Test-Path $zipFolderPath)) {
     New-Item -Path $zipFolderPath -ItemType Directory
 }
 
-
 # Function to log messages
 function Write-Log {
     param (
@@ -92,23 +91,110 @@ function Get-GroupMembers {
 
 # Function to collect system information
 function Get-SystemInfo {
-    param($ComputerName, $LogFilePath)
-    # ... [Logic to collect system info] ...
-    # Returns collected data
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Collecting basic system information
+        $osInfo = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $ComputerName
+        $cpuInfo = Get-WmiObject -Class Win32_Processor -ComputerName $ComputerName
+        $ramInfo = Get-WmiObject -Class Win32_PhysicalMemory -ComputerName $ComputerName
+
+        # Calculating total RAM
+        $totalRam = ($ramInfo | Measure-Object -Property Capacity -Sum).Sum / 1GB
+
+        # Creating custom object to hold system information
+        $systemInfo = [PSCustomObject]@{
+            ComputerName = $ComputerName
+            OSVersion = $osInfo.Caption
+            ServicePack = $osInfo.ServicePackMajorVersion
+            CPU = $cpuInfo.Name
+            TotalRAM_GB = [Math]::Round($totalRam, 2)
+        }
+
+        # Logging success
+        Write-Log "Successfully retrieved system information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $systemInfo
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-SystemInfo: $_" $LogFilePath
+        throw $_
+    }
 }
 
 # Function to collect disk space information
 function Get-DiskSpace {
-    param($ComputerName, $LogFilePath)
-    # ... [Logic to collect disk space info] ...
-    # Returns collected data
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Collecting disk space information
+        $diskInfo = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $ComputerName -Filter "DriveType=3"
+
+        # Creating an array to hold disk space details for each drive
+        $disks = foreach ($disk in $diskInfo) {
+            [PSCustomObject]@{
+                ComputerName = $ComputerName
+                Drive = $disk.DeviceID
+                TotalSize_GB = [Math]::Round($disk.Size / 1GB, 2)
+                FreeSpace_GB = [Math]::Round($disk.FreeSpace / 1GB, 2)
+                FileSystem = $disk.FileSystem
+            }
+        }
+
+        # Logging success
+        Write-Log "Successfully retrieved disk space information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $disks
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-DiskSpace: $_" $LogFilePath
+        throw $_
+    }
 }
+
 
 # Function to collect installed software information
 function Get-InstalledSoftware {
-    param($ComputerName, $LogFilePath)
-    # ... [Logic to collect installed software info] ...
-    # Returns collected data
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Registry paths to query for installed software
+        $registryPaths = @(
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" # for 64-bit systems
+        )
+
+        # Collecting installed software information
+        $softwareList = foreach ($path in $registryPaths) {
+            Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+                param($path)
+                Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+                    Where-Object { $null -ne $_.DisplayName } |
+                    Select-Object DisplayName, DisplayVersion, InstallDate, Publisher
+            } -ArgumentList $path
+        }
+
+        # Logging success
+        Write-Log "Successfully retrieved installed software information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $softwareList
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-InstalledSoftware: $_" $LogFilePath
+        throw $_
+    }
 }
 
 # Function to export data to JSON
