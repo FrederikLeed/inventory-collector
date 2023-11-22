@@ -205,7 +205,7 @@ function Get-PersonalCertificates {
 
         # Collecting certificate information directly
         $certificates = Get-ChildItem -Path $certPath -ErrorAction Stop |
-                        Select-Object Subject, Issuer, NotBefore, NotAfter, Thumbprint
+            select subject,NotBefore, NotAfter, Issuer, Thumbprint, HasPrivateKey, SubjectName, @{name='Subject Alternative Name';expression={($_.Extensions | Where-Object {$_.Oid.FriendlyName -eq "Subject Alternative Name"}).format($true)}}  
 
         # Logging success
         Write-Log "Successfully retrieved certificate information from the Personal store for $ComputerName" $LogFilePath
