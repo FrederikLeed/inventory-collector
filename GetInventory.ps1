@@ -5,7 +5,7 @@ param(
 
 # Set the groups and other metrics to query
 $groups = "Administrators", "Remote Desktop Users"
-$metrics = "GroupMembers", "SystemInfo", "DiskSpace", "InstalledSoftware"
+$metrics = "GroupMembers", "SystemInfo", "DiskSpace", "InstalledSoftware","PersonalCertificates","AutoRunInfo","ShareAccessInfo"
 
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
@@ -88,7 +88,6 @@ function Get-GroupMembers {
     return $groupMembersData
 }
 
-
 # Function to collect system information
 function Get-SystemInfo {
     param(
@@ -160,7 +159,6 @@ function Get-DiskSpace {
     }
 }
 
-
 # Function to collect installed software information
 function Get-InstalledSoftware {
     param(
@@ -177,12 +175,9 @@ function Get-InstalledSoftware {
 
         # Collecting installed software information
         $softwareList = foreach ($path in $registryPaths) {
-            Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-                param($path)
-                Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
-                    Where-Object { $null -ne $_.DisplayName } |
+            Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+                Where-Object { $null -ne $_.DisplayName } |
                     Select-Object DisplayName, DisplayVersion, InstallDate, Publisher
-            } -ArgumentList $path
         }
 
         # Logging success
@@ -193,6 +188,104 @@ function Get-InstalledSoftware {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-InstalledSoftware: $_" $LogFilePath
+        throw $_
+    }
+}
+
+# Function to get information about installed certificates
+function Get-PersonalCertificates {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Define the certificate path for the Personal store
+        $certPath = "Cert:\LocalMachine\My"
+
+        # Collecting certificate information directly
+        $certificates = Get-ChildItem -Path $certPath -ErrorAction Stop |
+                        Select-Object Subject, Issuer, NotBefore, NotAfter, Thumbprint
+
+        # Logging success
+        Write-Log "Successfully retrieved certificate information from the Personal store for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $certificates
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-PersonalCertificates: $_" $LogFilePath
+        throw $_
+    }
+}
+
+# Function to get information about AutoRun applications
+function Get-AutoRunInfo {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+
+        # Collect AutoRun information
+        $autoRunData = Get-CimInstance Win32_StartupCommand |
+                       Select-Object Name, Command, Location, User
+
+        # Returning the collected data
+        return $autoRunData
+        
+        # Logging success
+        Write-Log "Successfully collected AutoRun information for $ComputerName" $LogFilePath
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-AutoRunInfo: $_" $LogFilePath
+        throw $_
+    }
+}
+
+# Functino to get informatil about fileshares
+function Get-ShareAccessInfo {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Collecting share information and excluding specific shares
+        $excludedShares = "ADMIN$", "C$", "D$", "E$", "F$", "IPC$"
+        $shares = Get-WmiObject -Class Win32_Share -ComputerName $ComputerName | 
+                  Where-Object { $excludedShares -notcontains $_.Name }
+
+        # Collecting share access information
+        $shareAccessInfo = foreach ($share in $shares) {
+            $accessList = Get-Acl -Path $share.Path | Select-Object -ExpandProperty Access
+
+            # Formatting access list entries
+            $formattedAccessList = $accessList | ForEach-Object {
+                [PSCustomObject]@{
+                    AccessTo = $_.IdentityReference.ToString()
+                    AccessRights = $_.FileSystemRights.ToString()
+                    AccessType = $_.AccessControlType.ToString()
+                }
+            }
+
+            # Creating custom object for each share
+            [PSCustomObject]@{
+                ShareName = $share.Name
+                SharePath = $share.Path
+                AccessList = $formattedAccessList
+            }
+        }
+
+        # Logging success
+        Write-Log "Successfully retrieved share access information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $shareAccessInfo
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-ShareAccessInfo: $_" $LogFilePath
         throw $_
     }
 }
@@ -224,6 +317,9 @@ $scriptBlock = {
             "SystemInfo" { $data = Get-SystemInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "DiskSpace" { $data = Get-DiskSpace -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "InstalledSoftware" { $data = Get-InstalledSoftware -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "PersonalCertificates" { $data = Get-PersonalCertificates -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "AutoRunInfo" { $data = Get-AutoRunInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "ShareAccessInfo" { $data = Get-ShareAccessInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }            
         }
 
         # Export data to JSON
