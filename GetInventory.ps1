@@ -4,7 +4,6 @@ param(
 )
 
 # Set the groups and other metrics to query
-$groups = "Administrators", "Remote Desktop Users"
 $metrics = "GroupMembers", "SystemInfo", "DiskSpace", "InstalledSoftware","PersonalCertificates","AutoRunInfo","ShareAccessInfo"
 
 # Define base folder paths
@@ -43,10 +42,11 @@ function Write-Log {
 # Function to collect group members
 function Get-GroupMembers {
     param(
-        [string[]]$groups,
         [string]$ComputerName,
         [string]$LogFilePath
     )
+    # Group name definitions
+    $groups = "Administrators", "Remote Desktop Users"
 
     # Initialize an array to hold the output data
     $groupMembersData = @()
@@ -205,7 +205,7 @@ function Get-PersonalCertificates {
 
         # Collecting certificate information directly
         $certificates = Get-ChildItem -Path $certPath -ErrorAction Stop |
-            select subject,NotBefore, NotAfter, Issuer, Thumbprint, HasPrivateKey, SubjectName, @{name='Subject Alternative Name';expression={($_.Extensions | Where-Object {$_.Oid.FriendlyName -eq "Subject Alternative Name"}).format($true)}}  
+            select-object subject,NotBefore, NotAfter, Issuer, Thumbprint, HasPrivateKey, SubjectName, @{name='Subject Alternative Name';expression={($_.Extensions | Where-Object {$_.Oid.FriendlyName -eq "Subject Alternative Name"}).format($true)}}  
 
         # Logging success
         Write-Log "Successfully retrieved certificate information from the Personal store for $ComputerName" $LogFilePath
