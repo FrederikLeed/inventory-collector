@@ -1,2 +1,3 @@
 # getinventory
-A collection of script to collect inventory from servers
+
+A collection of scripts to collect inventory from servers
