@@ -1,4 +1,4 @@
-# Remote Computer Inventory PowerShell Script
+# Computer Inventory PowerShell Script
 
 This PowerShell script is designed to remotely collect various system and software-related information from one or more computers and create an inventory report in JSON format. It can also zip and move the collected data to a central fileshare location for further analysis.
 
