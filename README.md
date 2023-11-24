@@ -21,24 +21,41 @@ This PowerShell script is designed to remotely collect various system and softwa
 
 ## Usage
 
-1. Customize the script by modifying the following parameters:
-   - `$ComputerName`: Set the target remote computer name (default is the local computer).
-   - `$metrics`: Define the metrics you want to query.
+1. Define the base folder paths for storing collected data and the final zip file path.
 
-2. Define the base folder paths for storing collected data and the final zip file path.
+2. Run the script. The specified metrics will be collected and saved in JSON format in separate folders.
 
-3. Run the script. The specified metrics will be collected and saved in JSON format in separate folders.
+3. The collected data is then zipped, and the final zip file is moved to a central fileshare location defined by `$centralFilesharePath`.
 
-4. The collected data is then zipped, and the final zip file is moved to a central fileshare location defined by `$centralFilesharePath`.
+## Deployment methods
+
+1. Group Policy with scheduled task. You can import the sample GPO provided in this repo. "Device - Deploy Inventory Collector" just remember to change the path where the script is located.
+
+![Alt text](image.png)
+
+2. Defender For Endpoit Live Response Integration
+
+It is possible to use the Script in combination with the Defender For Endpoint Live Repsonse. Make sure that Live Response is setup  (See DOCS). Since my script is usigned a setting change must be made to able to run the script.
+
+There is a blog article available that explains more about how to leverage Custom Script in Live Response: [Incident Response Part 3: Leveraging Live Response](https://kqlquery.com/posts/leveraging-live-response/)
+
+To run unsigned scripts live Response:
+- Security.microsoft.com
+- Settings
+- Endpoints
+- Advanced Features
+- Make sure that Live Response is enabled
+- If you want to run this on a server enable live resonse for servers
+- Enable Live Response unsigened script execution
+
+Execute script:
+- Go to the device page
+- Initiate Live Response session
+- Upload File to library to upload script
+- After uploading the script to the library, use the ***run*** command to run the script
+
+3. Other script deployment methods using deploymentsoftware like ConfigMGR etc.
 
 ## Prerequisites
 
-- PowerShell remoting must be enabled on the target remote computers.
-
-- Appropriate permissions are required on the remote computers to query the specified metrics.
-
 - Ensure that the file share paths for storing data and the central fileshare location are accessible and writable.
-
-## License
-
-This script is provided under the [MIT License](LICENSE).
