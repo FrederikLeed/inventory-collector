@@ -84,7 +84,9 @@ TO DO !!
 
 ## Deployment methods
 
-### 1. Group Policy with scheduled task. You can import the sample GPO provided in this repo. "Device - Deploy Inventory Collector" just remember to change the path where the script is located
+### 1. Group Policy with scheduled task
+
+You can import the sample GPO provided in this repo. "Device - Deploy Inventory Collector" just remember to change the path where the script is located
 
 ![Alt text](image.png)
 
