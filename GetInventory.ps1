@@ -8,7 +8,7 @@ $metrics = "GroupMembers", "SystemInfo", "DiskSpace", "InstalledSoftware","Perso
 
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
-$zipFolderPath = "C:\InventoryData\Zipped"
+$zipFolderPath = ($baseFolderPath + "\Zipped")
 $centralFilesharePath = "\\DESKTOP-8Q45UIR\InventoryData"
 
 # Final zip file path
