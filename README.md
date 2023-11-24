@@ -78,7 +78,9 @@ Write-Host "File share setup complete"
 
 ```
 
-### Azure Blob Storage wih
+### Azure Blob Storage with SMB access
+
+TO DO !!
 
 ## Deployment methods
 
