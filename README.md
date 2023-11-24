@@ -113,8 +113,11 @@ Execute script:
 - Upload File to library to upload script
 - After uploading the script to the library, use the ***run*** command to run the script
 
-### 3. Other script deployment methods using deploymentsoftware like ConfigMGR etc
+### 3. Other
+
+Script deployment methods using deploymentsoftware like ConfigMGR or others
 
 ## Prerequisites
 
 - Ensure that the file share paths for storing data and the central fileshare location are accessible and writable.
+- At least PowerShell 5.1 on target computers.
