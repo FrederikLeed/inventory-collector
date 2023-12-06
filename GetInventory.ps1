@@ -4,7 +4,7 @@ param(
 )
 
 # Set the groups and other metrics to query
-$metrics = "GroupMembers", "SystemInfo", "DiskSpace", "InstalledSoftware","PersonalCertificates","AutoRunInfo","ShareAccessInfo"
+$metrics = "GroupMembers", "LocalUsers", "SystemInfo", "DiskSpace", "InstalledSoftware","PersonalCertificates","AutoRunInfo","ShareAccessInfo"
 
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
@@ -65,9 +65,9 @@ function Get-GroupMembers {
                     $adsPath = $_.GetType().InvokeMember("ADsPath", 'GetProperty', $null, $_, $null)
                     $adsPath.Replace("WinNT://", "")
                 }
-                Write-Log "Group '$group' members collected on $ComputerName" $LogFilePath
+                #Write-Log "Group '$group' members collected on $ComputerName" $LogFilePath
             } else {
-                Write-Log "Group '$group' not found on $ComputerName" $LogFilePath
+                #Write-Log "Group '$group' not found on $ComputerName" $LogFilePath
                 $members = @()
             }
 
@@ -86,6 +86,57 @@ function Get-GroupMembers {
 
     # Return the collected data
     return $groupMembersData
+}
+
+# Function to collect local users and their group memberships
+function Get-LocalUserGroupMemberships {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Initialize ADSI connection
+        $adsi = [ADSI]"WinNT://$ComputerName"
+
+        # Retrieve all user accounts
+        $users = $adsi.Children | Where-Object { $_.SchemaClassName -eq 'user' }
+
+        # Initialize an array to hold output data
+        $userData = @()
+
+        foreach ($user in $users) {
+            # Initialize an array to hold user's group memberships
+            $groupMemberships = @()
+
+            # Retrieve all groups
+            $groups = $adsi.Children | Where-Object { $_.SchemaClassName -eq 'group' }
+            foreach ($group in $groups) {
+                # Check if the user is a member of the group
+                $isMember = $group.Invoke("IsMember", $user.Path)
+                if ($isMember) {
+                    $groupMemberships += $group.Name
+                }
+            }
+
+            # Add the user data with group memberships to the output array
+            $userData += [PSCustomObject] @{
+                PSComputerName = $ComputerName
+                UserName = $user.Name
+                GroupMemberships = $groupMemberships
+            }
+        }
+
+        # Log operation success
+        Write-Log "Local users and their group memberships collected from $ComputerName" $LogFilePath
+    } catch {
+        # Log and rethrow any exceptions
+        Write-Log "Error encountered in Get-LocalUserGroupMemberships: $_" $LogFilePath
+        throw $_
+    }
+
+    # Return the collected data
+    return $userData
 }
 
 # Function to collect system information
@@ -314,6 +365,7 @@ $scriptBlock = {
         # Call respective function based on metric
         switch ($metric) {
             "GroupMembers" { $data = Get-GroupMembers -groups $groups -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "LocalUsers" { $data = Get-LocalUserGroupMemberships -groups $groups -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "SystemInfo" { $data = Get-SystemInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "DiskSpace" { $data = Get-DiskSpace -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "InstalledSoftware" { $data = Get-InstalledSoftware -ComputerName $ComputerName -LogFilePath $LogFilePath }
