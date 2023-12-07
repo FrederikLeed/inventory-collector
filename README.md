@@ -21,11 +21,11 @@ This PowerShell script is designed to remotely collect various system and softwa
 
 ## Usage
 
-1. Define the local base folder path `$baseFolderPath` for storing collected data and the final zip file path.
+1. Run the script. Using favorite #deployment-methods The specified metrics will be collected and saved in JSON format in separate folders.
 
-2. Run the script. The specified metrics will be collected and saved in JSON format in separate folders.
+2. The collected data is then zipped, and the final zip file is moved to a central fileshare location. #setup-central-fileshare
 
-3. The collected data is then zipped, and the final zip file is moved to a central fileshare location defined by `$centralFilesharePath`.
+3. Then, when all data is collected. #parse-computer-inventory-powershell-script-collected-data
 
 ## Setup Central Fileshare
 
@@ -45,10 +45,10 @@ This script is designed to set up a folder structure and configure sharing and N
 
 #### Script Details
 
-1. **Folder Paths**: 
+1. **Folder Paths**:
    - `$FolderPath`: Specifies the path for the main folder.
    - `$SubFolderPath`: Specifies the path for the subfolder within the main folder.
-2. **Share Setup**: 
+2. **Share Setup**:
    - `$ShareName`: The name under which the folder will be shared on the network.
    - The script shares the main folder with 'Change' permission for 'Everyone'.
 3. **NTFS Permissions**:
@@ -59,6 +59,7 @@ This script is designed to set up a folder structure and configure sharing and N
 #### Example
 
 To use this script:
+
 1. Set the `$FolderPath`, `$SubFolderPath`, and `$ShareName` variables as required.
 2. Run the script. It will create the necessary folders, share the main folder, and set the appropriate NTFS permissions.
 
@@ -101,20 +102,20 @@ Execute script:
 
 Script deployment methods using deploymentsoftware like ConfigMGR or others
 
-## Parsing Computer Inventory PowerShell Script collected data
+## Parse Computer Inventory PowerShell Script collected data
 
-## Overview
+## Description
+
 `ParseInventory.ps1` is a PowerShell script designed to parse and aggregate inventory data collected from multiple servers. The script processes a collection of zipped files, each containing JSON files with different system metrics. The aggregated data is then outputted into separate JSON files, one for each type of metric.
 
-## Features
+## Functionality
+
 - **Dynamic Parsing**: Automatically handles any JSON files found within nested zip archives, without the need for predefined metrics.
 - **Flexible Aggregation**: Aggregates data based on the dynamically determined metric names derived from folder names.
 - **Error Handling**: Includes error handling to capture and report issues during processing.
 
-## Prerequisites
-Before running the script, ensure that PowerShell is installed on your system. The script is compatible with PowerShell 5.1 and later.
+## Execution instructions
 
-## Usage
 1. **Set Parameters**: Modify the script parameters to specify the paths:
     - `$fileSharePath`: The path to the fileshare containing the zip files.
     - `$extractPath`: A temporary path for extracting the contents of the zip files.
@@ -125,7 +126,5 @@ Before running the script, ensure that PowerShell is installed on your system. T
 3. **Check Results**: After the script execution, check the `$aggregateOutputPath` for the aggregated JSON files.
 
 ## Output
-The script outputs aggregated JSON files, each named after a specific metric (e.g., `SystemInfo.json`). These files contain combined data from all processed servers for that particular metric.
 
-## Error Handling
-The script includes comprehensive error handling. Any issues encountered during the processing of files (such as missing JSON files or errors during JSON parsing) are reported to the console.
+The script outputs aggregated JSON files, each named after a specific metric (e.g., `SystemInfo.json`). These files contain combined data from all processed servers for that particular metric.
