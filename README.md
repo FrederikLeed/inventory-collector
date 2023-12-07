@@ -1,130 +1,124 @@
 # Computer Inventory PowerShell Script
 
-This PowerShell script is designed to remotely collect various system and software-related information from one or more computers and create an inventory report in JSON format. It can also zip and move the collected data to a central fileshare location for further analysis.
+This PowerShell script is crafted to remotely collect a wide array of system and software-related information from one or multiple computers. It compiles this data into an inventory report in JSON format and facilitates its transfer to a centralized fileshare location for thorough analysis.
 
 ## Features
 
-- Collects the following metrics:
-  - Group members of specified groups.
-  - Basic system information such as OS version, CPU, RAM, etc.
-  - Disk space information for each drive.
+- Collects a variety of metrics:
+  - Group memberships of specified groups.
+  - Basic system information including OS version, CPU, RAM, etc.
+  - Disk space details for each drive.
   - List of installed software.
-  - Information about personal certificates in the LocalMachine\My certificate store.
+  - Details about personal certificates in the LocalMachine\My certificate store.
   - AutoRun application information.
-  - Share access information on the target computer.
+  - Share access details on the target computer.
 
-- The script can be run on multiple remote computers simultaneously.
+- Capable of simultaneous execution on multiple remote computers.
 
-- Supports customization of the metrics to query and the target computer name.
+- Allows customization of the metrics to be queried and the target computer name.
 
-- Logs errors and information to log files for troubleshooting.
+- Includes error and information logging for troubleshooting purposes.
 
 ## Usage
 
-1. Run the script. Using favorite [deployment method](#deployment-methods) The specified metrics will be collected and saved in JSON format in separate folders.
+1. **Script Execution**:
+   Run the script using your preferred [deployment method](#deployment-methods). The script will gather the specified metrics and save them in JSON format in separate folders.
 
-2. The collected data is then zipped, and the final zip file is moved to a central fileshare location. [Set Central Fileshare](#setup-central-fileshare)
+2. **Data Management**:
+   The gathered data is then compressed, and the resulting zip file is moved to a central fileshare location. See [Setup Central Fileshare](#setup-central-fileshare) for more details.
 
-3. Then, when all data is collected. [Parse computer inventory powershell script collected data](#parse-computer-inventory-powershell-script-collected-data)
+3. **Data Parsing**:
+   Upon completion of data collection, process the data using [Parse Computer Inventory PowerShell Script Collected Data](#parse-computer-inventory-powershell-script-collected-data).
 
 ## Setup Central Fileshare
 
 ### Folder and File Share Setup Script
 
-Create a fileshare on a fileserver that can be access by the computers intended to run the script. You can create the share using the "NewCentralFileShare.ps1" script
+Use the "NewCentralFileShare.ps1" script to create a fileshare on a fileserver accessible by the computers intended to run this script.
 
 #### Overview
 
-This script is designed to set up a folder structure and configure sharing and NTFS permissions for inventory data management. It automates the creation of a main folder and a subfolder, shares the main folder with specific access rights, and sets NTFS permissions for domain computers and administrators.
+This script sets up a folder structure and configures sharing and NTFS permissions for efficient inventory data management. It automates the creation of a main folder and a subfolder, shares the main folder with specific access rights, and sets NTFS permissions for domain computers and administrators.
 
 #### Features
 
-- **Folder Creation**: Automatically creates a main folder and a subfolder if they do not already exist.
-- **SMB Sharing**: Shares the main folder on the network with 'Change' permissions, allowing specified users to write to it.
-- **NTFS Permission Configuration**: Sets specific NTFS permissions on both the main folder and subfolder for different user groups.
+- **Folder Creation**: Automatically creates a main folder and a subfolder if not already present.
+- **SMB Sharing**: Shares the main folder on the network with 'Change' permissions for specified user groups.
+- **NTFS Permissions**: Configures specific NTFS permissions for both the main and subfolder for various user groups.
 
 #### Script Details
 
 1. **Folder Paths**:
-   - `$FolderPath`: Specifies the path for the main folder.
-   - `$SubFolderPath`: Specifies the path for the subfolder within the main folder.
+   - `$FolderPath`: Path for the main folder.
+   - `$SubFolderPath`: Path for the subfolder within the main folder.
 2. **Share Setup**:
-   - `$ShareName`: The name under which the folder will be shared on the network.
-   - The script shares the main folder with 'Change' permission for 'Everyone'.
+   - `$ShareName`: Name for the network share of the folder.
+   - Shares the main folder with 'Change' permission for 'Everyone'.
 3. **NTFS Permissions**:
-   - The script sets specific NTFS permissions for 'Domain Computers' and 'Everyone' groups, ensuring controlled access to the folders.
-   - Additional permissions are set for 'Administrators' and 'SYSTEM', granting them full control over both folders.
-   - The script allows customization of inheritance and specific rights through the `Set-NTFSPermissions` function.
+   - Sets specific permissions for 'Domain Computers' and 'Everyone'.
+   - Grants 'Administrators' and 'SYSTEM' full control over both folders.
+   - Allows customization of inheritance and rights through the `Set-NTFSPermissions` function.
 
-#### Example
+#### Example Usage
 
-To use this script:
+1. Define `$FolderPath`, `$SubFolderPath`, and `$ShareName` as required.
+2. Run the script to create the folders, share the main folder, and set NTFS permissions.
 
-1. Set the `$FolderPath`, `$SubFolderPath`, and `$ShareName` variables as required.
-2. Run the script. It will create the necessary folders, share the main folder, and set the appropriate NTFS permissions.
+## Deployment Methods
 
-### Azure Blob Storage with SMB access
+### 1. Group Policy with Scheduled Task
 
-TO DO !!
-
-## Deployment methods
-
-### 1. Group Policy with scheduled task
-
-You can import the sample GPO provided in this repo. "Device - Deploy Inventory Collector" just remember to change the path where the script is located
+Import the sample GPO provided in this repository, "Device - Deploy Inventory Collector". Remember to update the script path.
 
 ![Alt text](image.png)
 
-### 2. Defender For Endpoit Live Response Integration
+### 2. Defender For Endpoint Live Response Integration
 
-It is possible to use the Script in combination with the Defender For Endpoint Live Repsonse. Make sure that Live Response is setup  (See DOCS). Since my script is usigned a setting change must be made to able to run the script.
+The script is compatible with Defender For Endpoint Live Response. Ensure Live Response is set up (See Documentation). 
 
-There is a blog article available that explains more about how to leverage Custom Script in Live Response: [Incident Response Part 3: Leveraging Live Response](https://kqlquery.com/posts/leveraging-live-response/)
+Refer to the blog article for more on using Custom Script in Live Response: [Incident Response Part 3: Leveraging Live Response](https://kqlquery.com/posts/leveraging-live-response/).
 
-To run unsigned scripts live Response:
+To run unsigned scripts in Live Response:
 
-- Security.microsoft.com
-- Settings
-- Endpoints
-- Advanced Features
-- Make sure that Live Response is enabled
-- If you want to run this on a server enable live resonse for servers
-- Enable Live Response unsigened script execution
+- Navigate to security.microsoft.com
+- Go to Settings > Endpoints > Advanced Features
+- Enable Live Response and unsigned script execution
 
-Execute script:
+Execute the script:
 
-- Go to the device page
-- Initiate Live Response session
-- Upload File to library to upload script
-- After uploading the script to the library, use the ***run*** command to run the script
+- Visit the device page and initiate a Live Response session
+- Upload the script to the library
+- Use the ***run*** command to execute the script
 
-### 3. Other
+### 3. Other Methods
 
-Script deployment methods using deploymentsoftware like ConfigMGR or others
+Deploy using software like ConfigMGR or other deployment tools.
 
-## Parse Computer Inventory PowerShell Script collected data
+## Parse Computer Inventory PowerShell Script Collected Data
 
-## Description
+### Description
 
-`ParseInventory.ps1` is a PowerShell script designed to parse and aggregate inventory data collected from multiple servers. The script processes a collection of zipped files, each containing JSON files with different system metrics. The aggregated data is then outputted into separate JSON files, one for each type of metric.
+`ParseInventory.ps1` processes and aggregates inventory data from multiple servers. It handles zipped files containing JSON files of various system metrics, compiling the data into separate JSON files for each metric type.
 
-## Functionality
+### Functionality
 
-- **Dynamic Parsing**: Automatically handles any JSON files found within nested zip archives, without the need for predefined metrics.
-- **Flexible Aggregation**: Aggregates data based on the dynamically determined metric names derived from folder names.
-- **Error Handling**: Includes error handling to capture and report issues during processing.
+- **Dynamic Parsing**: Handles JSON files in zip archives, eliminating the need for predefined metrics.
+- **Flexible Aggregation**: Aggregates data based on dynamically determined metric names from folder names.
+- **Error Handling**: Includes robust error handling mechanisms.
 
-## Execution instructions
+### Execution Instructions
 
-1. **Set Parameters**: Modify the script parameters to specify the paths:
-    - `$fileSharePath`: The path to the fileshare containing the zip files.
-    - `$extractPath`: A temporary path for extracting the contents of the zip files.
-    - `$aggregateOutputPath`: The path where the aggregated JSON files will be saved.
+1. **Set Parameters**:
+    - `$fileSharePath`: Path to the fileshare with zip files.
+    - `$extractPath`: Temporary path for extracting zip contents.
+    - `$aggregateOutputPath`: Path for saving aggregated JSON files.
 
-2. **Run the Script**: Execute the script in PowerShell. It will process each zip file, extract the contents, and aggregate the data into separate JSON files.
+2. **Run the Script**:
+   Execute in PowerShell. It processes each zip file, extracting contents and aggregating data into separate JSON files.
 
-3. **Check Results**: After the script execution, check the `$aggregateOutputPath` for the aggregated JSON files.
+3. **Check Results**:
+   Inspect the `$aggregateOutputPath` for aggregated JSON files.
 
-## Output
+### Output
 
-The script outputs aggregated JSON files, each named after a specific metric (e.g., `SystemInfo.json`). These files contain combined data from all processed servers for that particular metric.
+Outputs aggregated JSON files named after each metric (e.g., `SystemInfo.json`), containing combined data from all processed servers for that metric.
