@@ -21,11 +21,11 @@ This PowerShell script is designed to remotely collect various system and softwa
 
 ## Usage
 
-1. Run the script. Using favorite #deployment-methods The specified metrics will be collected and saved in JSON format in separate folders.
+1. Run the script. Using favorite [deployment method](#deployment-methods) The specified metrics will be collected and saved in JSON format in separate folders.
 
-2. The collected data is then zipped, and the final zip file is moved to a central fileshare location. #setup-central-fileshare
+2. The collected data is then zipped, and the final zip file is moved to a central fileshare location. [Set Central Fileshare](#setup-central-fileshare)
 
-3. Then, when all data is collected. #parse-computer-inventory-powershell-script-collected-data
+3. Then, when all data is collected. [Parse computer inventory powershell script collected data](#parse-computer-inventory-powershell-script-collected-data)
 
 ## Setup Central Fileshare
 
