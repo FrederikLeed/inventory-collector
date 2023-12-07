@@ -1,6 +1,7 @@
 # Define parameters for the computer name
 param(
-    [string]$ComputerName = $env:computerName
+    [string]$ComputerName = $env:computerName,
+    [string]$centralFilesharePath = "\\server\InventoryData"    
 )
 
 # Set the groups and other metrics to query
@@ -9,7 +10,6 @@ $metrics = "GroupMembers", "LocalUsers", "SystemInfo", "DiskSpace", "InstalledSo
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
 $zipFolderPath = ($baseFolderPath + "\Zipped")
-$centralFilesharePath = "\\server\InventoryData"
 
 # Final zip file path
 $finalZipFile = Join-Path -Path $zipFolderPath -ChildPath "$ComputerName.zip"
@@ -303,21 +303,37 @@ function Get-ShareAccessInfo {
     )
 
     try {
-        # Collecting share information and excluding specific shares
+        # Collecting share information and excluding specific system shares
         $excludedShares = "ADMIN$", "C$", "D$", "E$", "F$", "IPC$"
-        $shares = Get-WmiObject -Class Win32_Share -ComputerName $ComputerName | 
+        $shares = Get-WmiObject -Class Win32_Share -ComputerName $ComputerName |
                   Where-Object { $excludedShares -notcontains $_.Name }
 
         # Collecting share access information
         $shareAccessInfo = foreach ($share in $shares) {
-            $accessList = Get-Acl -Path $share.Path | Select-Object -ExpandProperty Access
+            # Getting NTFS permissions
+            $ntfsAccessList = Get-Acl -Path $share.Path | Select-Object -ExpandProperty Access
 
-            # Formatting access list entries
-            $formattedAccessList = $accessList | ForEach-Object {
+            # Formatting NTFS access list entries
+            $formattedNTFSAccessList = $ntfsAccessList | ForEach-Object {
                 [PSCustomObject]@{
                     AccessTo = $_.IdentityReference.ToString()
                     AccessRights = $_.FileSystemRights.ToString()
                     AccessType = $_.AccessControlType.ToString()
+                    PermissionType = "NTFS"
+                }
+            }
+
+            # Getting SMB permissions if available
+            $smbAccessList = @()
+            if (Get-Command "Get-SmbShareAccess" -ErrorAction SilentlyContinue) {
+                $smbAccessList = Get-SmbShareAccess -Name $share.Name -ErrorAction SilentlyContinue |
+                                 Select-Object -Property AccountName, AccessRight | ForEach-Object {
+                    [PSCustomObject]@{
+                        AccessTo = $_.AccountName
+                        AccessRights = $_.AccessRight
+                        AccessType = "Allow" # SMB shares typically only list allowed access
+                        PermissionType = "SMB"
+                    }
                 }
             }
 
@@ -325,7 +341,8 @@ function Get-ShareAccessInfo {
             [PSCustomObject]@{
                 ShareName = $share.Name
                 SharePath = $share.Path
-                AccessList = $formattedAccessList
+                NTFSAccessList = $formattedNTFSAccessList
+                SMBAccessList = $smbAccessList
             }
         }
 
