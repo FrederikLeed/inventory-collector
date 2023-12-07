@@ -29,54 +29,38 @@ This PowerShell script is designed to remotely collect various system and softwa
 
 ## Setup Central Fileshare
 
-### File server
+### Folder and File Share Setup Script
 
 Create a fileshare on a fileserver that can be access by the computers intended to run the script. You can create the share using the "NewCentralFileShare.ps1" script
 
-```Powershell
+#### Overview
 
-# PowerShell Script to Create a File Share with List, Write, and Check File Presence Access for Domain Computers
+This script is designed to set up a folder structure and configure sharing and NTFS permissions for inventory data management. It automates the creation of a main folder and a subfolder, shares the main folder with specific access rights, and sets NTFS permissions for domain computers and administrators.
 
-# Define the folder path and share name
-$FolderPath = "C:\SharedFolder"
-$ShareName = "SharedData"
-$Domain = Get-ADDomain
-$DomainComputers = ($Domain.NetBIOSName) + "\Domain Computers"
+#### Features
 
-# Create the folder if it doesn't exist
-if (!(Test-Path -Path $FolderPath)) {
-    New-Item -Path $FolderPath -ItemType Directory
-    Write-Host "Folder created at $FolderPath"
-} else {
-    Write-Host "Folder already exists at $FolderPath"
-}
+- **Folder Creation**: Automatically creates a main folder and a subfolder if they do not already exist.
+- **SMB Sharing**: Shares the main folder on the network with 'Change' permissions, allowing specified users to write to it.
+- **NTFS Permission Configuration**: Sets specific NTFS permissions on both the main folder and subfolder for different user groups.
 
-# Share the folder with 'Change' permission which includes write access
-$SMBShareParams = @{
-    Name        = $ShareName
-    Path        = $FolderPath
-    Description = "Shared folder for domain computers with specific access"
-    ChangeAccess = $DomainComputers
-}
-New-SmbShare @SMBShareParams
-Write-Host "Folder shared as $ShareName"
+#### Script Details
 
-# Set NTFS permissions to allow listing, writing, and checking file presence but not reading file content
-$ACL = Get-Acl $FolderPath
-$AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    $DomainComputers, 
-    "Write, CreateFiles, CreateDirectories, Delete, ReadAttributes, ReadPermissions, ListDirectory, Synchronize", 
-    "ContainerInherit, ObjectInherit", 
-    "None", 
-    "Allow"
-)
-$ACL.AddAccessRule($AccessRule)
-Set-Acl -Path $FolderPath -AclObject $ACL
-Write-Host "NTFS permissions set for domain computers with specific access requirements"
+1. **Folder Paths**: 
+   - `$FolderPath`: Specifies the path for the main folder.
+   - `$SubFolderPath`: Specifies the path for the subfolder within the main folder.
+2. **Share Setup**: 
+   - `$ShareName`: The name under which the folder will be shared on the network.
+   - The script shares the main folder with 'Change' permission for 'Everyone'.
+3. **NTFS Permissions**:
+   - The script sets specific NTFS permissions for 'Domain Computers' and 'Everyone' groups, ensuring controlled access to the folders.
+   - Additional permissions are set for 'Administrators' and 'SYSTEM', granting them full control over both folders.
+   - The script allows customization of inheritance and specific rights through the `Set-NTFSPermissions` function.
 
-Write-Host "File share setup complete"
+#### Example
 
-```
+To use this script:
+1. Set the `$FolderPath`, `$SubFolderPath`, and `$ShareName` variables as required.
+2. Run the script. It will create the necessary folders, share the main folder, and set the appropriate NTFS permissions.
 
 ### Azure Blob Storage with SMB access
 
@@ -117,7 +101,31 @@ Execute script:
 
 Script deployment methods using deploymentsoftware like ConfigMGR or others
 
-## Prerequisites
+## Parsing Computer Inventory PowerShell Script collected data
 
-- Ensure that the file share paths for storing data and the central fileshare location are accessible and writable.
-- At least PowerShell 5.1 on target computers.
+## Overview
+`ParseInventory.ps1` is a PowerShell script designed to parse and aggregate inventory data collected from multiple servers. The script processes a collection of zipped files, each containing JSON files with different system metrics. The aggregated data is then outputted into separate JSON files, one for each type of metric.
+
+## Features
+- **Dynamic Parsing**: Automatically handles any JSON files found within nested zip archives, without the need for predefined metrics.
+- **Flexible Aggregation**: Aggregates data based on the dynamically determined metric names derived from folder names.
+- **Error Handling**: Includes error handling to capture and report issues during processing.
+
+## Prerequisites
+Before running the script, ensure that PowerShell is installed on your system. The script is compatible with PowerShell 5.1 and later.
+
+## Usage
+1. **Set Parameters**: Modify the script parameters to specify the paths:
+    - `$fileSharePath`: The path to the fileshare containing the zip files.
+    - `$extractPath`: A temporary path for extracting the contents of the zip files.
+    - `$aggregateOutputPath`: The path where the aggregated JSON files will be saved.
+
+2. **Run the Script**: Execute the script in PowerShell. It will process each zip file, extract the contents, and aggregate the data into separate JSON files.
+
+3. **Check Results**: After the script execution, check the `$aggregateOutputPath` for the aggregated JSON files.
+
+## Output
+The script outputs aggregated JSON files, each named after a specific metric (e.g., `SystemInfo.json`). These files contain combined data from all processed servers for that particular metric.
+
+## Error Handling
+The script includes comprehensive error handling. Any issues encountered during the processing of files (such as missing JSON files or errors during JSON parsing) are reported to the console.
