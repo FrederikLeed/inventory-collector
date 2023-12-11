@@ -4,8 +4,19 @@ param(
     [string]$centralFilesharePath = "\\server\InventoryData"    
 )
 
-# Set the groups and other metrics to query
-$metrics = "GroupMembers", "LocalUsers", "SystemInfo", "DiskSpace", "InstalledSoftware","PersonalCertificates","AutoRunInfo","ShareAccessInfo"
+# Set the metrics to query
+$metrics = @"
+    GroupMembers
+    LocalUsers
+    SystemInfo
+    DiskSpace
+    InstalledSoftware
+    PersonalCertificates
+    AutoRunInfo
+    ShareAccessInfo
+    UserProfileList
+    Services
+"@
 
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
@@ -270,6 +281,56 @@ function Get-PersonalCertificates {
     }
 }
 
+# Function to get information about user profiles
+function Get-UserProfileList {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Define the profile path for users
+        $ProfilePath = ($env:SystemDrive + "\Users")
+
+        # Collecting user profile information directly
+        $UserProfiles = Get-ChildItem -Path $ProfilePath -ErrorAction Stop
+
+        # Logging success
+        Write-Log "Successfully retrieved user profile information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $UserProfiles
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-UserProfileList: $_" $LogFilePath
+        throw $_
+    }
+}
+
+# Function to get information about services
+function Get-Services {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+
+        # Collecting user profile information directly
+        $Services = Get-WmiObject "Win32_Service" -ErrorAction Stop | Select-Object *
+
+        # Logging success
+        Write-Log "Successfully retrieved services information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $Services
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-Services: $_" $LogFilePath
+        throw $_
+    }
+}
+
 # Function to get information about AutoRun applications
 function Get-AutoRunInfo {
     param(
@@ -295,7 +356,7 @@ function Get-AutoRunInfo {
     }
 }
 
-# Functino to get informatil about fileshares
+# Function to get informatil about fileshares
 function Get-ShareAccessInfo {
     param(
         [string]$ComputerName,
@@ -388,7 +449,9 @@ $scriptBlock = {
             "InstalledSoftware" { $data = Get-InstalledSoftware -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "PersonalCertificates" { $data = Get-PersonalCertificates -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "AutoRunInfo" { $data = Get-AutoRunInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "ShareAccessInfo" { $data = Get-ShareAccessInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }            
+            "ShareAccessInfo" { $data = Get-ShareAccessInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "UserProfileList" { $data = Get-UserProfileList -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
         }
 
         # Export data to JSON
