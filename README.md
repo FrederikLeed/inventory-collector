@@ -12,6 +12,8 @@ This PowerShell script is crafted to remotely collect a wide array of system and
   - Details about personal certificates in the LocalMachine\My certificate store.
   - AutoRun application information.
   - Share access details on the target computer.
+  - List local user profiles
+  - List services
 
 - Capable of simultaneous execution on multiple remote computers.
 
