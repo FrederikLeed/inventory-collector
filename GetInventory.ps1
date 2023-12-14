@@ -6,17 +6,20 @@ param(
 
 # Set the metrics to query
 $metrics = @"
-    GroupMembers
-    LocalUsers
-    SystemInfo
-    DiskSpace
-    InstalledSoftware
-    PersonalCertificates
-    AutoRunInfo
-    ShareAccessInfo
-    UserProfileList
-    Services
+GroupMembers
+LocalUsers
+SystemInfo
+DiskSpace
+InstalledSoftware
+PersonalCertificates
+AutoRunInfo
+ShareAccessInfo
+UserProfileList
+Services
 "@
+
+# Split the string into an array by line breaks
+[array]$metrics = $metrics -split "`r`n"
 
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
