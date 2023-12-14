@@ -242,7 +242,7 @@ function Get-InstalledSoftware {
         $softwareList = foreach ($path in $registryPaths) {
             Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
                 Where-Object { $null -ne $_.DisplayName } |
-                    Select-Object DisplayName, DisplayVersion, InstallDate, Publisher
+                    Select-Object @{Name='ComputerName'; Expression={$ComputerName}},DisplayName, DisplayVersion, InstallDate, Publisher
         }
 
         # Logging success
