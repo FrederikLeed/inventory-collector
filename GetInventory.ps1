@@ -265,9 +265,14 @@ function Get-PersonalCertificates {
         # Define the certificate path for the Personal store
         $certPath = "Cert:\LocalMachine\My"
 
-        # Collecting certificate information directly
+        # Collecting certificate information
         $certificates = Get-ChildItem -Path $certPath -ErrorAction Stop |
-            select-object subject,NotBefore, NotAfter, Issuer, Thumbprint, HasPrivateKey, SubjectName, @{name='Subject Alternative Name';expression={($_.Extensions | Where-Object {$_.Oid.FriendlyName -eq "Subject Alternative Name"}).format($true)}}  
+            Select-Object @{Name='ComputerName'; Expression={$ComputerName}}, 
+                          Subject, NotBefore, NotAfter, Issuer, Thumbprint, 
+                          HasPrivateKey, SubjectName, 
+                          @{Name='Subject Alternative Name'; Expression={
+                              ($_Extensions | Where-Object {$_.Oid.FriendlyName -eq "Subject Alternative Name"}).Format($true)
+                          }}
 
         # Logging success
         Write-Log "Successfully retrieved certificate information from the Personal store for $ComputerName" $LogFilePath
@@ -292,8 +297,13 @@ function Get-UserProfileList {
         # Define the profile path for users
         $ProfilePath = ($env:SystemDrive + "\Users")
 
-        # Collecting user profile information directly
-        $UserProfiles = Get-ChildItem -Path $ProfilePath -ErrorAction Stop
+        # Collecting user profile information
+        $UserProfiles = Get-ChildItem -Path $ProfilePath -Directory -ErrorAction Stop |
+            Select-Object @{Name='ComputerName'; Expression={$ComputerName}}, 
+                          Name, CreationTime, LastWriteTime, FullName, 
+                          @{Name='UserProfileSize'; Expression={
+                              (Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+                          }}
 
         # Logging success
         Write-Log "Successfully retrieved user profile information for $ComputerName" $LogFilePath
@@ -315,9 +325,11 @@ function Get-Services {
     )
 
     try {
-
-        # Collecting user profile information directly
-        $Services = Get-WmiObject "Win32_Service" -ErrorAction Stop | Select-Object * | Where-Object {$_.StartName -and $_.StartName -notmatch "LocalSystem|LocalService|NetworkService"}
+        # Collecting service information
+        $Services = Get-WmiObject "Win32_Service" -ErrorAction Stop |
+            Where-Object {$_.StartName -and $_.StartName -notmatch "LocalSystem|LocalService|NetworkService"} |
+            Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
+                          DisplayName, Name, State, StartMode, StartName, Description
 
         # Logging success
         Write-Log "Successfully retrieved services information for $ComputerName" $LogFilePath
@@ -331,6 +343,7 @@ function Get-Services {
     }
 }
 
+
 # Function to get information about AutoRun applications
 function Get-AutoRunInfo {
     param(
@@ -339,22 +352,23 @@ function Get-AutoRunInfo {
     )
 
     try {
-
         # Collect AutoRun information
         $autoRunData = Get-CimInstance Win32_StartupCommand |
-                       Select-Object Name, Command, Location, User
+                       Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
+                                     Name, Command, Location, User
 
         # Returning the collected data
-        return $autoRunData
-        
-        # Logging success
-        Write-Log "Successfully collected AutoRun information for $ComputerName" $LogFilePath
+        $autoRunData | ForEach-Object {
+            Write-Log "Successfully collected AutoRun information for $($_.Name) on $ComputerName" $LogFilePath
+            $_
+        }
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-AutoRunInfo: $_" $LogFilePath
         throw $_
     }
 }
+
 
 # Function to get informatil about fileshares
 function Get-ShareAccessInfo {
@@ -400,6 +414,7 @@ function Get-ShareAccessInfo {
 
             # Creating custom object for each share
             [PSCustomObject]@{
+                ComputerName = $ComputerName
                 ShareName = $share.Name
                 SharePath = $share.Path
                 NTFSAccessList = $formattedNTFSAccessList
