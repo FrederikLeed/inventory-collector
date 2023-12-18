@@ -320,7 +320,7 @@ function Get-Services {
     try {
 
         # Collecting user profile information directly
-        $Services = Get-WmiObject "Win32_Service" -ErrorAction Stop | Select-Object * | Where-Object {$_.StartName -and $_.StartName -notmatch "LocalSystem|LocalService|NetworkService"}
+        $Services = Get-WmiObject "Win32_Service" -ErrorAction Stop | Select-Object * | Where-Object {$_.StartName -and $_.StartName -notmatch "LocalSystem|LocalService|NetworkService|NT Service"}
 
         # Logging success
         Write-Log "Successfully retrieved services information for $ComputerName" $LogFilePath
