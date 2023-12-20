@@ -87,7 +87,7 @@ function Get-GroupMembers {
 
             # Add the data to the output array
             $groupMembersData += [PSCustomObject] @{
-                PSComputerName = $ComputerName
+                ComputerName = $ComputerName
                 GroupName = $group
                 Members = $members
             }
@@ -135,7 +135,7 @@ function Get-LocalUserGroupMemberships {
 
             # Add the user data with group memberships to the output array
             $userData += [PSCustomObject] @{
-                PSComputerName = $ComputerName
+                ComputerName = $ComputerName
                 UserName = $user.Name
                 GroupMemberships = $groupMemberships
             }

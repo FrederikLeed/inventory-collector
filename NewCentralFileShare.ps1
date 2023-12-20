@@ -1,6 +1,6 @@
 # Define the folder path, share name, and subfolder path
-$FolderPath = "F:\InventoryData"
-$SubFolderPath = "F:\InventoryData\script"  # Define the subfolder path
+$FolderPath = "D:\InventoryData"
+$SubFolderPath = "D:\InventoryData\script"  # Define the subfolder path
 $ShareName = "Inventory"
 $Domain = Get-ADDomain
 $DomainComputers = ($Domain.NetBIOSName) + "\Domain Computers"
