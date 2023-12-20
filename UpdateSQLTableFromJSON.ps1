@@ -12,12 +12,10 @@ Add-Type -AssemblyName "System.Data"
 
 $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
 
-function Insert-SqlTableFromJson {
+function Update-SqlTableFromJson {
     param (
         [string]$JsonFilePath
     )
-
-
 
     try {
         $JsonContent = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
@@ -81,5 +79,5 @@ function Convert-ToSimpleFormat {
 
 # Iterate over each JSON file and update the corresponding table
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
-    Insert-SqlTableFromJson -JsonFilePath $_.FullName
+    Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
