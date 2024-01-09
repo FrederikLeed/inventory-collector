@@ -16,6 +16,7 @@ AutoRunInfo
 ShareAccessInfo
 UserProfileList
 Services
+InstalledUpdates
 "@
 
 # Split the string into an array by line breaks
@@ -257,6 +258,46 @@ function Get-InstalledSoftware {
     }
 }
 
+# Function to collect installed updates information
+function Get-InstalledUpdates {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Creating a COM object to interact with Windows Update Agent
+        $updateSession = New-Object -ComObject Microsoft.Update.Session
+        $updateSearcher = $updateSession.CreateUpdateSearcher()
+
+        # Getting the count of installed updates
+        $updatesCount = $updateSearcher.GetTotalHistoryCount()
+
+        # Retrieving installed updates
+        $updates = $updateSearcher.QueryHistory(0, $updatesCount)
+
+        # Collecting information about each update
+        $installedUpdates = foreach ($update in $updates) {
+            [PSCustomObject]@{
+                ComputerName = $ComputerName
+                Date         = $update.Date
+                Title        = $update.Title
+                ServiceID    = $update.ServiceID
+            }
+        }
+
+        # Logging success
+        Write-Log "Successfully retrieved installed updates information for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $installedUpdates
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-InstalledUpdates: $_" $LogFilePath
+        throw $_
+    }
+}
+
 # Function to get information about installed certificates
 function Get-PersonalCertificates {
     param(
@@ -470,6 +511,7 @@ $scriptBlock = {
             "ShareAccessInfo" { $data = Get-ShareAccessInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "UserProfileList" { $data = Get-UserProfileList -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "InstalledUpdates" { $data = Get-InstalledUpdates -ComputerName $ComputerName -LogFilePath $LogFilePath }
         }
 
         # Export data to JSON
