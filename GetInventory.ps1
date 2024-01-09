@@ -174,7 +174,7 @@ function Get-SystemInfo {
             ComputerName = $ComputerName
             OSVersion = $osInfo.Caption
             ServicePack = $osInfo.ServicePackMajorVersion
-            lastbootuptime = $osInfo.lastbootuptime
+            lastbootuptime = ($osInfo | Select-Object @{LABEL='LastBootUpTime';EXPRESSION={$_.ConverttoDateTime($_.lastbootuptime)}}).lastbootuptime
             CPU = $cpuInfo.Name
             TotalRAM_GB = [Math]::Round($totalRam, 2)
         }
