@@ -19,8 +19,7 @@ Services
 "@
 
 # Split the string into an array by line breaks
-[array]$metrics = $metrics -split "`r`n"
-
+[array]$metrics = $metrics.Split([Environment]::NewLine, [StringSplitOptions]::RemoveEmptyEntries)
 # Define base folder paths
 $baseFolderPath = "C:\InventoryData"
 $zipFolderPath = ($baseFolderPath + "\Zipped")
