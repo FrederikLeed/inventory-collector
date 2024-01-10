@@ -168,13 +168,13 @@ function Get-SystemInfo {
 
         # Calculating total RAM
         $totalRam = ($ramInfo | Measure-Object -Property Capacity -Sum).Sum / 1GB
-
+        $lastbootuptime = ($osInfo | Select-Object @{LABEL='LastBootUpTime';EXPRESSION={$_.ConverttoDateTime($_.lastbootuptime)}}).lastbootuptime
         # Creating custom object to hold system information
         $systemInfo = [PSCustomObject]@{
             ComputerName = $ComputerName
             OSVersion = $osInfo.Caption
             ServicePack = $osInfo.ServicePackMajorVersion
-            lastbootuptime = ($osInfo | Select-Object @{LABEL='LastBootUpTime';EXPRESSION={$_.ConverttoDateTime($_.lastbootuptime)}}).lastbootuptime
+            lastbootuptime = $lastbootuptime
             CPU = $cpuInfo.Name
             TotalRAM_GB = [Math]::Round($totalRam, 2)
         }
