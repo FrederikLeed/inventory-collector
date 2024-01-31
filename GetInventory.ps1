@@ -347,7 +347,7 @@ function Get-UserProfileList {
             Select-Object @{Name='ComputerName'; Expression={$ComputerName}}, 
                           Name, CreationTime, LastWriteTime, FullName, 
                           @{Name='UserProfileSize'; Expression={
-                              (Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+                              (Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum /1Mb
                           }}
 
         # Logging success
