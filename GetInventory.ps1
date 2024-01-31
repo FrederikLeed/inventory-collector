@@ -346,7 +346,7 @@ function Get-UserProfileList {
         $UserProfiles = Get-ChildItem -Path $ProfilePath -Directory -ErrorAction Stop |
             Select-Object @{Name='ComputerName'; Expression={$ComputerName}}, 
                           Name, CreationTime, LastWriteTime, FullName, 
-                          @{Name='UserProfileSize'; Expression={
+                          @{Name='UserProfileSizeMB'; Expression={
                               (Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum /1Mb
                           }}
 
