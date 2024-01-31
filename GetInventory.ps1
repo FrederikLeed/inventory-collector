@@ -17,6 +17,7 @@ ShareAccessInfo
 UserProfileList
 Services
 InstalledUpdates
+ScheduledTasks
 "@
 
 # Split the string into an array by line breaks
@@ -387,6 +388,68 @@ function Get-Services {
     }
 }
 
+# Function to get information about scheduled tasks
+function Get-ScheduledTasks {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Retrieving all scheduled tasks from the specified computer
+        $allTasks = Get-ScheduledTask # -CimSession $ComputerName
+
+        # Filtering out tasks running as SYSTEM, LOCAL SERVICE, or NETWORK SERVICE
+        $nonSystemTasks = $allTasks | Where-Object { $_.Principal.UserId -notmatch 'SYSTEM|LOCAL SERVICE|NETWORK SERVICE' -and $_.Principal.UserId }
+
+        # Creating custom objects for each task
+        $customTasksInfo = foreach ($task in $nonSystemTasks) {
+            # Formatting trigger details
+            $triggerDescriptions = $task.Triggers | ForEach-Object {
+                $triggerDetails = $_.PSBase.CimClass.CimClassName
+                $startBoundary = $_.StartBoundary
+                $endBoundary = $_.EndBoundary
+                $daysInterval = $_.DaysInterval
+                
+                switch ($triggerDetails) {
+                    'MSFT_TaskTimeTrigger' { "One time, Starts: $startBoundary" }
+                    'MSFT_TaskDailyTrigger' { "Daily, Starts: $startBoundary, Ends: $endBoundary, Interval: $daysInterval day(s)" }
+                    'MSFT_TaskWeeklyTrigger' { "Weekly, Starts: $startBoundary, Ends: $endBoundary" }
+                    'MSFT_TaskMonthlyTrigger' { "Monthly, Starts: $startBoundary, Ends: $endBoundary" }
+                    default { "Unknown Trigger Type" }
+                }
+            }
+
+            $formattedTriggers = $triggerDescriptions -join '; '
+
+            # Getting action details
+            $actions = ($task.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }) -join ', '
+            $TaskInfo = $task | Get-ScheduledTaskInfo
+
+            [PSCustomObject]@{
+                TaskName = $task.TaskName
+                TaskPath = $task.TaskPath
+                LastRunTime = $TaskInfo.LastRunTime
+                NextRunTime = $TaskInfo.NextRunTime
+                Principal = $task.Principal.UserId
+                LogonType = $task.Principal.LogonType
+                RunLevel = $task.Principal.RunLevel
+                Schedule = $formattedTriggers
+                Action = $actions
+            }
+        }
+
+        # Logging success
+        Write-Log "Successfully retrieved non-system scheduled tasks for $ComputerName" $LogFilePath
+
+        # Returning the collected data
+        return $customTasksInfo
+    } catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-NonSystemScheduledTasks: $_" $LogFilePath
+        throw $_
+    }
+}
 
 # Function to get information about AutoRun applications
 function Get-AutoRunInfo {
@@ -512,6 +575,7 @@ $scriptBlock = {
             "UserProfileList" { $data = Get-UserProfileList -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "InstalledUpdates" { $data = Get-InstalledUpdates -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "ScheduledTasks" { $data = Get-ScheduledTasks -ComputerName $ComputerName -LogFilePath $LogFilePath }
         }
 
         # Export data to JSON
