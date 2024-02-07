@@ -427,6 +427,7 @@ function Get-ScheduledTasks {
             $TaskInfo = $task | Get-ScheduledTaskInfo
 
             [PSCustomObject]@{
+                ComputerName = $ComputerName
                 TaskName = $task.TaskName
                 TaskPath = $task.TaskPath
                 LastRunTime = $TaskInfo.LastRunTime
