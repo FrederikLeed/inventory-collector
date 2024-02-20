@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<Scripts>
+  <Script>
+    <Path>C:\Scripts\Script1.ps1</Path>
+    <Parameters>
+      <Parameter Name="Param1" Value="Value1"/>
+      <Parameter Name="Param2" Value="Value2"/>
+    </Parameters>
+  </Script>
+  <Script>
+    <Path>C:\Scripts\Script2.ps1</Path>
+    <Parameters>
+      <Parameter Name="ParamA" Value="ValueA"/>
+    </Parameters>
+  </Script>
+  <Script>
+    <Path>C:\Scripts\Script3.ps1</Path>
+    <Parameters>
+      <Parameter Name="FirstParam" Value="123"/>
+      <Parameter Name="SecondParam" Value="456"/>
+    </Parameters>
+  </Script>
+  <Script>
+    <Path>C:\Scripts\Script4.ps1</Path>
+    <Parameters>
+      <Parameter Name="Username" Value="UserX"/>
+      <Parameter Name="Password" Value="Pass123"/>
+    </Parameters>
+  </Script>
+  <Script>
+    <Path>C:\Scripts\Script5.ps1</Path>
+    <Parameters>
+      <Parameter Name="FilePath" Value="C:\Data\Input.csv"/>
+      <Parameter Name="Mode" Value="ReadOnly"/>
+    </Parameters>
+  </Script>
+</Scripts>
