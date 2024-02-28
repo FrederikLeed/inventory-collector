@@ -545,7 +545,7 @@ function Get-ShareAccessInfo {
 # Function to export data to JSON
 function Export-ToJson {
     param($Data, $FilePath)
-    $Data | ConvertTo-Json | Out-File -FilePath $FilePath
+    $Data | ConvertTo-Json -Depth 100 | Out-File -FilePath $FilePath
 }
 
 # Main script block for querying metrics
