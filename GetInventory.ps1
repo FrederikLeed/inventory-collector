@@ -279,11 +279,13 @@ function Get-InstalledUpdates {
 
         # Collecting information about each update
         $installedUpdates = foreach ($update in $updates) {
-            [PSCustomObject]@{
-                ComputerName = $ComputerName
-                Date         = $update.Date
-                Title        = $update.Title
-                ServiceID    = $update.ServiceID
+            if($update.Title){
+                [PSCustomObject]@{
+                    ComputerName = $ComputerName
+                    Date         = $update.Date
+                    Title        = $update.Title
+                    ServiceID    = $update.ServiceID
+                }
             }
         }
 
