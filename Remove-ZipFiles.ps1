@@ -52,3 +52,4 @@ function Remove-ZipFiles {
 
 # Executing the function
 Remove-ZipFiles -Path $FolderPath
+exit 0

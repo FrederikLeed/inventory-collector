@@ -49,12 +49,21 @@ function Invoke-ScriptWithParameters {
         # Attempt to execute the script with parameters
         Write-Log "Starting script: $scriptPath with parameters: $($parameters.GetEnumerator() | Out-String)"
         & PowerShell.exe -File $scriptPath @argumentList
-        Write-Log "Completed script: $scriptPath"
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) {
+            Write-Log "Completed script: $scriptPath successfully"
+            return $true
+        } else {
+            Write-Log "ERROR: Script $scriptPath failed with exit code $exitCode"
+            return $false
+        }
     } catch {
         # Log any exceptions that occur
         Write-Log "ERROR: An error occurred while executing $scriptPath. Error: $_"
+        return $false
     }
 }
+
 
 # Load the XML file
 [xml]$scriptsConfig = Get-Content -Path $xmlFilePath
@@ -70,5 +79,9 @@ foreach ($script in $scriptsConfig.Scripts.Script) {
     }
 
     # Invoke the script with parameters and error handling
-    Invoke-ScriptWithParameters -scriptPath $scriptPath -parameters $parameters
+    $result = Invoke-ScriptWithParameters -scriptPath $scriptPath -parameters $parameters
+    if (-not $result) {
+        Write-Log "ERROR: Execution halted due to failure in script: $scriptPath"
+        break
+    }
 }

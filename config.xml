@@ -1,37 +1,34 @@
 <?xml version="1.0"?>
 <Scripts>
   <Script>
-    <Path>C:\Scripts\Script1.ps1</Path>
+    <Path>D:\Github\ADSO-Inventory-Collector\ParseInventory.ps1</Path>
     <Parameters>
-      <Parameter Name="Param1" Value="Value1"/>
-      <Parameter Name="Param2" Value="Value2"/>
+      <Parameter Name="fileSharePath" Value="\\egmont.com\fs\dae41_data\ServerInventory"/>
+      <Parameter Name="extractPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryTemp"/>
+      <Parameter Name="aggregateOutputPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryOutput"/>
     </Parameters>
   </Script>
   <Script>
-    <Path>C:\Scripts\Script2.ps1</Path>
+    <Path>D:\Github\ADSO-Inventory-Collector\CreateSQLTableFromJSON.ps1</Path>
     <Parameters>
-      <Parameter Name="ParamA" Value="ValueA"/>
+      <Parameter Name="SqlServer" Value="azdaesql01.egmont.com"/>
+      <Parameter Name="Database" Value="ServerInventory"/>
+      <Parameter Name="JsonFilesPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryOutput"/>
     </Parameters>
   </Script>
   <Script>
-    <Path>C:\Scripts\Script3.ps1</Path>
+    <Path>D:\Github\ADSO-Inventory-Collector\UpdateSQLTableFromJSON.ps1</Path>
     <Parameters>
-      <Parameter Name="FirstParam" Value="123"/>
-      <Parameter Name="SecondParam" Value="456"/>
+      <Parameter Name="SqlServer" Value="azdaesql01.egmont.com"/>
+      <Parameter Name="Database" Value="ServerInventory"/>
+      <Parameter Name="JsonFilesPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryOutput"/>
+      <Parameter Name="logFilePath" Value="D:\Logs\InventorySQLlog.log"/>      
     </Parameters>
   </Script>
   <Script>
-    <Path>C:\Scripts\Script4.ps1</Path>
+    <Path>D:\Github\ADSO-Inventory-Collector\Remove-ZipFiles.ps1</Path>
     <Parameters>
-      <Parameter Name="Username" Value="UserX"/>
-      <Parameter Name="Password" Value="Pass123"/>
-    </Parameters>
-  </Script>
-  <Script>
-    <Path>C:\Scripts\Script5.ps1</Path>
-    <Parameters>
-      <Parameter Name="FilePath" Value="C:\Data\Input.csv"/>
-      <Parameter Name="Mode" Value="ReadOnly"/>
+      <Parameter Name="FolderPath" Value="\\egmont.com\fs\dae41_data\ServerInventory"/>
     </Parameters>
   </Script>
 </Scripts>

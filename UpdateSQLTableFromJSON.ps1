@@ -81,3 +81,4 @@ function Convert-ToSimpleFormat {
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
+exit 0
