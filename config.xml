@@ -3,32 +3,32 @@
   <Script>
     <Path>D:\Github\ADSO-Inventory-Collector\ParseInventory.ps1</Path>
     <Parameters>
-      <Parameter Name="fileSharePath" Value="\\egmont.com\fs\dae41_data\ServerInventory"/>
-      <Parameter Name="extractPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryTemp"/>
-      <Parameter Name="aggregateOutputPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryOutput"/>
+      <Parameter Name="fileSharePath" Value="\\Server\ServerInventory"/>
+      <Parameter Name="extractPath" Value="D:\Github\Inventory-Collector\InventoryTemp"/>
+      <Parameter Name="aggregateOutputPath" Value="D:\Github\Inventory-Collector\InventoryOutput"/>
     </Parameters>
   </Script>
   <Script>
     <Path>D:\Github\ADSO-Inventory-Collector\CreateSQLTableFromJSON.ps1</Path>
     <Parameters>
-      <Parameter Name="SqlServer" Value="azdaesql01.egmont.com"/>
+      <Parameter Name="SqlServer" Value="sql01.domain.com"/>
       <Parameter Name="Database" Value="ServerInventory"/>
-      <Parameter Name="JsonFilesPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryOutput"/>
+      <Parameter Name="JsonFilesPath" Value="D:\Github\Inventory-Collector\InventoryOutput"/>
     </Parameters>
   </Script>
   <Script>
     <Path>D:\Github\ADSO-Inventory-Collector\UpdateSQLTableFromJSON.ps1</Path>
     <Parameters>
-      <Parameter Name="SqlServer" Value="azdaesql01.egmont.com"/>
+      <Parameter Name="SqlServer" Value="sql01.domain.com"/>
       <Parameter Name="Database" Value="ServerInventory"/>
-      <Parameter Name="JsonFilesPath" Value="D:\Github\ADSO-Inventory-Collector\InventoryOutput"/>
+      <Parameter Name="JsonFilesPath" Value="D:\Github\Inventory-Collector\InventoryOutput"/>
       <Parameter Name="logFilePath" Value="D:\Logs\InventorySQLlog.log"/>      
     </Parameters>
   </Script>
   <Script>
     <Path>D:\Github\ADSO-Inventory-Collector\Remove-ZipFiles.ps1</Path>
     <Parameters>
-      <Parameter Name="FolderPath" Value="\\egmont.com\fs\dae41_data\ServerInventory"/>
+      <Parameter Name="FolderPath" Value="\\Server\ServerInventory"/>
     </Parameters>
   </Script>
 </Scripts>
