@@ -103,7 +103,7 @@ function Get-GroupMembers {
     return $groupMembersData
 }
 
-# Function to collect local users and their group memberships
+# Function to collect local users and their group memberships along with password last set and last logon date
 function Get-LocalUserGroupMemberships {
     param(
         [string]$ComputerName,
@@ -134,11 +134,21 @@ function Get-LocalUserGroupMemberships {
                 }
             }
 
-            # Add the user data with group memberships to the output array
+            # Retrieve user's password last set and last logon date using Win32_UserAccount and Win32_NetworkLoginProfile
+            $LocalUserAccount = Try{ Get-LocalUser $($user.Name)}catch{Write-Log "Get-LocalUser failed" $LogFilePath}
+
+            $passwordLastSet = if ($LocalUserAccount) { $LocalUserAccount.PasswordLastSet } else { $null }
+            $lastLogonDate   = if ($LocalUserAccount) { $LocalUserAccount.LastLogon } else { $null }
+            $Enabled         = if ($LocalUserAccount) { $LocalUserAccount.Enabled } else { $null }
+
+            # Add the user data with group memberships, password last set, and last logon date to the output array
             $userData += [PSCustomObject] @{
-                ComputerName = $ComputerName
-                UserName = $user.Name
-                GroupMemberships = $groupMemberships
+                ComputerName      = $ComputerName
+                UserName          = $user.Name
+                GroupMemberships  = $groupMemberships
+                PasswordLastSet   = $passwordLastSet
+                LastLogonDate     = $lastLogonDate
+                Enabled           = $Enabled
             }
         }
 
