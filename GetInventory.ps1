@@ -18,6 +18,7 @@ UserProfileList
 Services
 InstalledUpdates
 ScheduledTasks
+SecurityLogEvent4624Summary
 "@
 
 # Split the string into an array by line breaks
@@ -554,6 +555,90 @@ function Get-ShareAccessInfo {
     }
 }
 
+function Get-SecurityLogEvent4624Summary {
+    param (
+        [datetime]$StartDate = (Get-Date).AddDays(-1),  # Start date set to 24 hours ago by default
+        [datetime]$EndDate = (Get-Date)                # End date set to current date by default
+    )
+
+    # Define the XML namespace for event parsing
+    $xmlNamespace = @{n = 'http://schemas.microsoft.com/win/2004/08/events/event'}
+
+    # Define the logon type mapping
+    $logonTypeMap = @{
+        2 = "Interactive (Logon locally)"
+        3 = "Network"
+        4 = "Batch"
+        5 = "Service"
+        7 = "Unlock"
+        8 = "NetworkCleartext"
+        9 = "NewCredentials"
+        10 = "RemoteInteractive"
+        11 = "CachedInteractive"
+    }
+
+    try {
+        # Construct the filter XML query
+        $filterXml = @"
+<QueryList>
+  <Query Id="0" Path="Security">
+    <Select Path="Security">
+      *[System[(EventID=4624)]]
+    </Select>
+  </Query>
+</QueryList>
+"@
+
+        # Retrieve events using Get-WinEvent with the filter
+        $events = Get-WinEvent -FilterXml $filterXml
+
+        # Filter events within the last 24 hours
+        $events = $events | Where-Object { $_.TimeCreated -ge $StartDate -and $_.TimeCreated -le $EndDate }
+
+        # Initialize the collection of parsed events
+        $parsedEvents = @()
+
+        foreach ($event in $events) {
+            # Parse the XML of the event
+            $xml = [xml]$event.ToXml()
+            $eventDataNode = $xml.Event.EventData
+
+            # Extract the relevant data
+            $logonTypeString = $eventDataNode.Data | Where-Object { $_.Name -eq 'LogonType' } | Select-Object -ExpandProperty '#text'
+            $logonType = [int]$logonTypeString
+
+            $parsedEvent = [PSCustomObject]@{
+                TargetUserName      = $eventDataNode.Data | Where-Object { $_.Name -eq 'TargetUserName' } | Select-Object -ExpandProperty '#text'
+                TargetDomainName    = $eventDataNode.Data | Where-Object { $_.Name -eq 'TargetDomainName' } | Select-Object -ExpandProperty '#text'
+                LogonType           = $logonTypeString
+                IpAddress           = $eventDataNode.Data | Where-Object { $_.Name -eq 'IpAddress' } | Select-Object -ExpandProperty '#text'
+                LogonTypeName       = $logonTypeMap[$logonType]
+                TimeCreated         = $event.TimeCreated
+            }
+
+            # Add parsed event to the collection
+            $parsedEvents += $parsedEvent
+        }
+
+        # Group and summarize the parsed events
+        $summary = $parsedEvents |
+            Group-Object TargetUserName, TargetDomainName, LogonType, IpAddress, LogonTypeName |
+            Select-Object @{Name='TargetUserName';Expression={$_.Group[0].TargetUserName}},
+                          @{Name='TargetDomainName';Expression={$_.Group[0].TargetDomainName}},
+                          @{Name='LogonType';Expression={$_.Group[0].LogonType}},
+                          @{Name='IpAddress';Expression={$_.Group[0].IpAddress}},
+                          @{Name='LogonTypeName';Expression={$_.Group[0].LogonTypeName}},
+                          @{Name='Count';Expression={$_.Count}},
+                          @{Name='LatestLogonTimeStamp';Expression={$_.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1 -ExpandProperty TimeCreated}}
+
+        # Return the summary
+        return $summary
+    }
+    catch {
+        Write-Error "An error occurred while retrieving or summarizing the security log events: $_"
+    }
+}
+
 # Function to export data to JSON
 function Export-ToJson {
     param($Data, $FilePath)
@@ -589,6 +674,7 @@ $scriptBlock = {
             "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "InstalledUpdates" { $data = Get-InstalledUpdates -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "ScheduledTasks" { $data = Get-ScheduledTasks -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "SecurityLogEvent4624Summary" { $data = Get-SecurityLogEvent4624Summary -ComputerName $ComputerName -LogFilePath $LogFilePath }            
         }
 
         # Export data to JSON
