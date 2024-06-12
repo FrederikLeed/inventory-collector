@@ -177,6 +177,15 @@ function Get-SystemInfo {
         $osInfo = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $ComputerName
         $cpuInfo = Get-WmiObject -Class Win32_Processor -ComputerName $ComputerName
         $ramInfo = Get-WmiObject -Class Win32_PhysicalMemory -ComputerName $ComputerName
+        $compSysInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $ComputerName
+
+        # Determining if the computer is domain-joined or in a workgroup
+        if ($compSysInfo.PartOfDomain) {
+            $domainInfo = $compSysInfo.Domain
+        } else {
+            $domainInfo = $compSysInfo.Workgroup
+        }
+        
 
         # Calculating total RAM
         $totalRam = ($ramInfo | Measure-Object -Property Capacity -Sum).Sum / 1GB
@@ -189,6 +198,7 @@ function Get-SystemInfo {
             lastbootuptime = $lastbootuptime
             CPU = $cpuInfo.Name
             TotalRAM_GB = [Math]::Round($totalRam, 2)
+            DomainOrWorkgroup = $domainInfo
         }
 
         # Logging success
