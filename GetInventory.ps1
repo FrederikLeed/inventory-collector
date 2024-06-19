@@ -567,12 +567,10 @@ function Get-ShareAccessInfo {
 
 function Get-SecurityLogEvent4624Summary {
     param (
+        [string]$ComputerName,    
         [datetime]$StartDate = (Get-Date).AddDays(-1),  # Start date set to 24 hours ago by default
         [datetime]$EndDate = (Get-Date)                # End date set to current date by default
     )
-
-    # Define the XML namespace for event parsing
-    $xmlNamespace = @{n = 'http://schemas.microsoft.com/win/2004/08/events/event'}
 
     # Define the logon type mapping
     $logonTypeMap = @{
@@ -599,10 +597,10 @@ function Get-SecurityLogEvent4624Summary {
 </QueryList>
 "@
 
-        # Retrieve events using Get-WinEvent with the filter
-        $events = Get-WinEvent -FilterXml $filterXml
+        # Retrieve events using Get-WinEvent with the filter on the specified computer
+        $events = Get-WinEvent -ComputerName $ComputerName -FilterXml $filterXml
 
-        # Filter events within the last 24 hours
+        # Filter events within the specified time range
         $events = $events | Where-Object { $_.TimeCreated -ge $StartDate -and $_.TimeCreated -le $EndDate }
 
         # Initialize the collection of parsed events
@@ -618,6 +616,7 @@ function Get-SecurityLogEvent4624Summary {
             $logonType = [int]$logonTypeString
 
             $parsedEvent = [PSCustomObject]@{
+                ComputerName        = $ComputerName
                 TargetUserName      = $eventDataNode.Data | Where-Object { $_.Name -eq 'TargetUserName' } | Select-Object -ExpandProperty '#text'
                 TargetDomainName    = $eventDataNode.Data | Where-Object { $_.Name -eq 'TargetDomainName' } | Select-Object -ExpandProperty '#text'
                 LogonType           = $logonTypeString
@@ -632,8 +631,9 @@ function Get-SecurityLogEvent4624Summary {
 
         # Group and summarize the parsed events
         $summary = $parsedEvents |
-            Group-Object TargetUserName, TargetDomainName, LogonType, IpAddress, LogonTypeName |
-            Select-Object @{Name='TargetUserName';Expression={$_.Group[0].TargetUserName}},
+            Group-Object ComputerName, TargetUserName, TargetDomainName, LogonType, IpAddress, LogonTypeName |
+            Select-Object @{Name='ComputerName';Expression={$_.Group[0].ComputerName}},
+                          @{Name='TargetUserName';Expression={$_.Group[0].TargetUserName}},
                           @{Name='TargetDomainName';Expression={$_.Group[0].TargetDomainName}},
                           @{Name='LogonType';Expression={$_.Group[0].LogonType}},
                           @{Name='IpAddress';Expression={$_.Group[0].IpAddress}},
