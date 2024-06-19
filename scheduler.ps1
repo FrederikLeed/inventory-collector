@@ -17,11 +17,15 @@ This command executes the script using 'config.xml' located in the same director
 - The log file is automatically generated in the same directory as this script with the name "ExecutionLog.log".
 
 #>
+Param(
+    $xmlFilePath = (Join-Path -Path $scriptDir -ChildPath "config.xml"),
+    $logFilePath = (Join-Path -Path $scriptDir -ChildPath "ExecutionLog.log")
+)
 
 # Determine the path of the script and define paths for the XML configuration and log file
 $scriptDir = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
-$xmlFilePath = Join-Path -Path $scriptDir -ChildPath "config.xml"
-$logFilePath = Join-Path -Path $scriptDir -ChildPath "ExecutionLog.log"
+#$xmlFilePath = Join-Path -Path $scriptDir -ChildPath "config.xml"
+#$logFilePath = Join-Path -Path $scriptDir -ChildPath "ExecutionLog.log"
 
 # Function to log messages to a file
 function Write-Log {
