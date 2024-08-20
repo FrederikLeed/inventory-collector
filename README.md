@@ -1,5 +1,8 @@
 # Computer Inventory PowerShell Script
 
+![image](https://github.com/user-attachments/assets/8e220b79-dee2-4c43-aa21-6cdaf28f54aa)
+
+
 This PowerShell script is crafted to remotely collect a wide array of system and software-related information from one or multiple computers. It compiles this data into an inventory report in JSON format and facilitates its transfer to a centralized fileshare location for thorough analysis.
 
 ## Features
