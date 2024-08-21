@@ -1,8 +1,8 @@
 ﻿Param(
-    [string]$SqlServer = "sqlsrv01.domain.com", #Specify SQL ServerName
-    [string]$Database = "inventory", #Specify DatabaseName
+    [string]$SqlServer = "server.domain.com", # Specify SQL ServerName
+    [string]$Database = "Inventory", # Specify DatabaseName
     [string]$JsonFilesPath = "D:\InventoryParsed",  # Update with the path to your JSON files
-    [string]$logFilePath = "D:\InventoryParsed\SqlInsertLog.txt"  # Define log file path
+    [string]$logFilePath = "D:\Logs\InventorySQLlog.log"  # Define log file path
 )
 
 # PowerShell Script to Update SQL Tables from JSON Files
@@ -25,20 +25,53 @@ function Update-SqlTableFromJson {
         $SqlConnection.ConnectionString = $ConnectionString
         $SqlConnection.Open()
 
-        # Delete existing records from the table
-        $SqlDeleteCommand = "DELETE FROM [$TableName]"
-        $SqlCommand = $SqlConnection.CreateCommand()
-        $SqlCommand.CommandText = $SqlDeleteCommand
-        $SqlCommand.ExecuteNonQuery() | Out-Null
+        # Delete existing records from the table unless the table is 'SecurityLogEvent4624Summary'
+        if ($TableName -ne 'SecurityLogEvent4624Summary') {
+            $SqlDeleteCommand = "DELETE FROM [$TableName]"
+            $SqlCommand = $SqlConnection.CreateCommand()
+            $SqlCommand.CommandText = $SqlDeleteCommand
+            $SqlCommand.ExecuteNonQuery() | Out-Null
+        }
+        #Create SQL command object
+            $SqlCommand = $SqlConnection.CreateCommand()
 
-        # Insert new records
+        # Insert new records with uniqueness check
         foreach ($Item in $JsonContent) {
             $Columns = ($Item.PSObject.Properties | ForEach-Object { "[$($_.Name)]" }) -join ", "
             $Values = ($Item.PSObject.Properties | ForEach-Object { 
                 $Value = Convert-ToSimpleFormat $_.Value
                 "'$Value'" 
             }) -join ", "
-            $SqlInsertCommand = "INSERT INTO [$TableName] ($Columns) VALUES ($Values)"
+
+            if ($TableName -eq 'SecurityLogEvent4624Summary') {
+                # Construct the unique key check query
+                $CheckExistsQuery = @"
+                    SELECT COUNT(1) FROM [$TableName]
+                    WHERE 
+                        [ComputerName] = '$($Item.ComputerName)' AND
+                        [TargetUserName] = '$($Item.TargetUserName)' AND
+                        [TargetDomainName] = '$($Item.TargetDomainName)' AND
+                        [LogonType] = '$($Item.LogonType)' AND
+                        [IpAddress] = '$($Item.IpAddress)' AND
+                        [LogonTypeName] = '$($Item.LogonTypeName)' AND
+                        [LatestLogonTimeStamp] = '$($Item.LatestLogonTimeStamp.value)'
+"@
+
+                $SqlCommand.CommandText = $CheckExistsQuery
+                $RecordExists = $SqlCommand.ExecuteScalar()
+
+                if ($RecordExists -eq 0) {
+                    # Insert if the record does not exist
+                    $SqlInsertCommand = "INSERT INTO [$TableName] ($Columns) VALUES ($Values)"
+                }
+                else {
+                    continue # Skip if the record already exists
+                }
+            }
+            else {
+                # Default insert for other tables
+                $SqlInsertCommand = "INSERT INTO [$TableName] ($Columns) VALUES ($Values)"
+            }
             
             $SqlCommand.CommandText = $SqlInsertCommand
             try {
