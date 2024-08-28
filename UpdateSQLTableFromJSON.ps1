@@ -32,7 +32,7 @@ function Update-SqlTableFromJson {
             $SqlCommand.CommandText = $SqlDeleteCommand
             $SqlCommand.ExecuteNonQuery() | Out-Null
         }
-        #Create SQL command object
+        #Create SQL command
             $SqlCommand = $SqlConnection.CreateCommand()
 
         # Insert new records with uniqueness check
