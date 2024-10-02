@@ -24,7 +24,7 @@ SecurityLogEvent4624Summary
 # Split the string into an array by line breaks
 [array]$metrics = $metrics.Split([Environment]::NewLine, [StringSplitOptions]::RemoveEmptyEntries)
 # Define base folder paths
-$baseFolderPath = "C:\InventoryData"
+$baseFolderPath = $env:SystemDrive + "\Inv" + (New-Guid).ToString().Substring(0,8)
 $zipFolderPath = ($baseFolderPath + "\Zipped")
 
 # Final zip file path
