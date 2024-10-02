@@ -141,13 +141,17 @@ function Get-LocalUserGroupMemberships {
             $passwordLastSet = if ($LocalUserAccount) { $LocalUserAccount.PasswordLastSet } else { $null }
             $lastLogonDate   = if ($LocalUserAccount) { $LocalUserAccount.LastLogon } else { $null }
             $Enabled         = if ($LocalUserAccount) { $LocalUserAccount.Enabled } else { $null }
+            $Description     = if ($LocalUserAccount) { $LocalUserAccount.Description } else { $null }
+            $PasswordExpires = if ($LocalUserAccount) { $LocalUserAccount.PasswordExpires } else { $null }
 
             # Add the user data with group memberships, password last set, and last logon date to the output array
             $userData += [PSCustomObject] @{
                 ComputerName      = $ComputerName
                 UserName          = $user.Name
+                Description       = $Description
                 GroupMemberships  = $groupMemberships
                 PasswordLastSet   = $passwordLastSet
+                PasswordExpires   = $PasswordExpires
                 LastLogonDate     = $lastLogonDate
                 Enabled           = $Enabled
             }
@@ -175,7 +179,7 @@ function Get-SystemInfo {
     try {
         # Collecting basic system information
         $osInfo = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $ComputerName
-        $cpuInfo = Get-WmiObject -Class Win32_Processor -ComputerName $ComputerName
+        $cpuInfo = (Get-WmiObject -Class Win32_Processor -ComputerName $ComputerName | Measure-Object -Property NumberOfCores -Sum).Sum
         $ramInfo = Get-WmiObject -Class Win32_PhysicalMemory -ComputerName $ComputerName
         $compSysInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $ComputerName
 
@@ -196,7 +200,7 @@ function Get-SystemInfo {
             OSVersion = $osInfo.Caption
             ServicePack = $osInfo.ServicePackMajorVersion
             lastbootuptime = $lastbootuptime
-            CPU = $cpuInfo.Name
+            CPU = $cpuInfo
             TotalRAM_GB = [Math]::Round($totalRam, 2)
             DomainOrWorkgroup = $domainInfo
         }
@@ -226,11 +230,19 @@ function Get-DiskSpace {
 
         # Creating an array to hold disk space details for each drive
         $disks = foreach ($disk in $diskInfo) {
+            # Calculating the free space percentage
+            $freeSpacePercentage = if ($disk.Size -gt 0) {
+                [Math]::Round(($disk.FreeSpace / $disk.Size) * 100, 2)
+            } else {
+                0
+            }
+
             [PSCustomObject]@{
                 ComputerName = $ComputerName
                 Drive = $disk.DeviceID
                 TotalSize_GB = [Math]::Round($disk.Size / 1GB, 2)
                 FreeSpace_GB = [Math]::Round($disk.FreeSpace / 1GB, 2)
+                FreeSpace_Percentage = $freeSpacePercentage
                 FileSystem = $disk.FileSystem
             }
         }
@@ -261,11 +273,38 @@ function Get-InstalledSoftware {
             "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" # for 64-bit systems
         )
 
+        # Function to parse InstallDate string to DateTime object
+        function Convert-ToDate {
+            param([string]$InstallDate)
+
+            if ($InstallDate -match '^\d{8}$') {
+                # Return the date in yyyy-MM-dd format
+                return [datetime]::ParseExact($InstallDate, 'yyyyMMdd', $null).ToString('yyyy-MM-dd')
+            }
+            return $null
+        }
+
+        # Creating an array to hold software information
+        $softwareList = @()
+
         # Collecting installed software information
-        $softwareList = foreach ($path in $registryPaths) {
-            Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
-                Where-Object { $null -ne $_.DisplayName } |
-                    Select-Object @{Name='ComputerName'; Expression={$ComputerName}},DisplayName, DisplayVersion, InstallDate, Publisher
+        foreach ($path in $registryPaths) {
+            $softwareEntries = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue |
+                Where-Object { $null -ne $_.DisplayName }
+            
+            foreach ($entry in $softwareEntries) {
+                # Constructing a PSCustomObject for each software entry
+                $software = [PSCustomObject]@{
+                    ComputerName   = $ComputerName
+                    DisplayName    = $entry.DisplayName
+                    DisplayVersion = $entry.DisplayVersion
+                    InstallDate    = Convert-ToDate $entry.InstallDate
+                    Publisher      = $entry.Publisher
+                }
+
+                # Adding the object to the array
+                $softwareList += $software
+            }
         }
 
         # Logging success
@@ -300,12 +339,15 @@ function Get-InstalledUpdates {
 
         # Collecting information about each update
         $installedUpdates = foreach ($update in $updates) {
-            if($update.Title){
+            if ($update.Title) {
+                # Formatting the Date to match UpdateTimeStamp
+                $formattedDate = $update.Date.ToString("yyyy-MM-dd HH:mm:ss")
+
                 [PSCustomObject]@{
-                    ComputerName = $ComputerName
-                    Date         = $update.Date
-                    Title        = $update.Title
-                    ServiceID    = $update.ServiceID
+                    ComputerName     = $ComputerName
+                    Date             = $formattedDate
+                    Title            = $update.Title
+                    ServiceID        = $update.ServiceID
                 }
             }
         }
@@ -337,11 +379,14 @@ function Get-PersonalCertificates {
         $certificates = Get-ChildItem -Path $certPath -ErrorAction Stop |
             Select-Object @{Name='ComputerName'; Expression={$ComputerName}}, 
                           Subject, NotBefore, NotAfter, Issuer, Thumbprint, 
-                          HasPrivateKey, SubjectName, 
+                          HasPrivateKey, 
                           @{Name='Subject Alternative Name'; Expression={
-                              ($_Extensions | Where-Object {$_.Oid.FriendlyName -eq "Subject Alternative Name"}).Format($true)
+                              if ($_.DnsNameList) {
+                                  ($_.DnsNameList -join ', ')
+                              } else {
+                                  'N/A'
+                              }
                           }}
-
         # Logging success
         Write-Log "Successfully retrieved certificate information from the Personal store for $ComputerName" $LogFilePath
 
@@ -450,16 +495,17 @@ function Get-ScheduledTasks {
             $TaskInfo = $task | Get-ScheduledTaskInfo
 
             [PSCustomObject]@{
-                ComputerName = $ComputerName
-                TaskName = $task.TaskName
-                TaskPath = $task.TaskPath
-                LastRunTime = $TaskInfo.LastRunTime
-                NextRunTime = $TaskInfo.NextRunTime
-                Principal = $task.Principal.UserId
-                LogonType = $task.Principal.LogonType
-                RunLevel = $task.Principal.RunLevel
-                Schedule = $formattedTriggers
-                Action = $actions
+                ComputerName   = $ComputerName
+                TaskName       = $task.TaskName
+                TaskPath       = $task.TaskPath
+                LastRunTime    = $TaskInfo.LastRunTime
+                NextRunTime    = $TaskInfo.NextRunTime
+                LastTaskResult = $TaskInfo.LastTaskResult
+                Principal      = $task.Principal.UserId
+                LogonType      = $task.Principal.LogonType
+                RunLevel       = $task.Principal.RunLevel
+                Schedule       = $formattedTriggers
+                Action         = $actions
             }
         }
 
