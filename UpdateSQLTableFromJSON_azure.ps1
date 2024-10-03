@@ -1,10 +1,8 @@
 ﻿Param(
-    [string]$SqlServer = "mk-azure-sql-01.database.windows.net", # Specify SQL Server Name
+    [string]$SqlServer = "sqlserver01.domain.com", # Specify SQL Server Name
     [string]$Database = "Inventory", # Specify Database Name
     [string]$JsonFilesPath = "F:\InventoryOutput",  # Update with the path to your JSON files
-    [string]$logFilePath = "f:\Logs\InventorySQLlog.log",  # Define log file path
-    [string]$subscriptionID = "your-subscription-id", # Azure Subscription ID
-    [string]$userName = "az-admfnl@morsoe.onmicrosoft.com" # Azure AD Username
+    [string]$logFilePath = "f:\Logs\InventorySQLlog.log"  # Define log file path
 )
 
 
@@ -24,7 +22,12 @@ $KeyColumnsMap = @{
     "LocalUsers" = @("ComputerName", "UserName")
     "GroupMembers" = @("ComputerName", "GroupName")
     "AutoRunInfo" = @("ComputerName", "Name")
-    "OtherTable" = @("ComputerName", "SomeOtherKey")
+    "DiskSpace" = @("ComputerName", "Drive")   
+    "InstalledUpdates" = @("ComputerName", "Title")
+    "InstalledSoftware" = @("ComputerName", "DisplayName","DisplayVersion")    
+    "UserProfileList" = @("ComputerName", "Name")
+    "ShareAccessInfo" = @("ComputerName", "ShareName")
+    "Services" = @("ComputerName", "Name")    
 }
 
 # Function to update or insert SQL records from a JSON file

@@ -1,9 +1,7 @@
 ﻿Param(
-    [string]$SqlServer = "mk-azure-sql-01.database.windows.net", # Specify SQL Server Name
+    [string]$SqlServer = "sqlserver01.domain.com", # Specify SQL Server Name
     [string]$Database = "inventory", # Specify Database Name
-    [string]$JsonFilesPath = "F:\InventoryOutput",  # Update with the path to your JSON files
-    [string]$subscriptionID = "your-subscription-id", # Azure Subscription ID
-    [string]$userName = "az-admfnl@morsoe.onmicrosoft.com" # Azure AD Username
+    [string]$JsonFilesPath = "F:\InventoryOutput"  # Update with the path to your JSON files
 )
 
 # Install required modules (if not already installed)
@@ -11,7 +9,7 @@
 # Install-Module -Name SqlServer -AllowClobber -Force
 
 # Sign in to your Azure account
-Connect-AzAccount -UseDeviceAuthentication -Subscription $subscriptionID
+Connect-AzAccount -Identity
 
 # Get the access token from Azure AD
 $accessToken = (Get-AzAccessToken -ResourceUrl "https://database.windows.net/").Token
@@ -133,14 +131,6 @@ function Update-SqlTableFromJson {
                     Add-SqlColumn -TableName $TableName -ColumnName $Column -DataType $DataType
                 }
             }
-
-            # Optionally, remove columns from SQL table not found in JSON
-            # Be cautious with this as it can lead to data loss
-            # foreach ($Column in $CurrentSchema) {
-            #     if ($Column -notin $JsonSchema -and $Column -ne 'Id' -and $Column -ne 'UpdateTimeStamp') {
-            #         Remove-SqlColumn -TableName $TableName -ColumnName $Column
-            #     }
-            # }
         }
     }
     catch {
@@ -152,3 +142,5 @@ function Update-SqlTableFromJson {
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
+
+exit 0

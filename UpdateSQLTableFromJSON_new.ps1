@@ -12,11 +12,20 @@ Add-Type -AssemblyName "System.Data"
 
 $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
 
-    # Define a dictionary mapping table names to key columns
-    $KeyColumnsMap = @{
-        "PersonalCertificates" = @("ComputerName", "Thumbprint")
-        "OtherTable" = @("ComputerName", "SomeOtherKey")
-    }
+# Define a dictionary mapping table names to key columns
+$KeyColumnsMap = @{
+    "PersonalCertificates" = @("ComputerName", "Thumbprint")
+    "LocalUsers" = @("ComputerName", "UserName")
+    "GroupMembers" = @("ComputerName", "GroupName")
+    "AutoRunInfo" = @("ComputerName", "Name")
+    "DiskSpace" = @("ComputerName", "Drive")   
+    "InstalledUpdates" = @("ComputerName", "Title")
+    "InstalledSoftware" = @("ComputerName", "DisplayName","DisplayVersion")    
+    "UserProfileList" = @("ComputerName", "Name")
+    "ShareAccessInfo" = @("ComputerName", "ShareName")
+    "Services" = @("ComputerName", "Name")    
+}
+
 
 function Update-SqlTableFromJson {
     param (
@@ -44,7 +53,7 @@ function Update-SqlTableFromJson {
             # Dynamically construct the condition based on the key columns for the table
             if ($KeyColumnsMap.ContainsKey($TableName)) {
                 $KeyColumns = $KeyColumnsMap[$TableName]
-                $Condition = ($KeyColumns | ForEach-Object { "$_ = '$($Item.$_)" }) -join " AND "
+                $Condition = ($KeyColumns | ForEach-Object { "$_ = '$($Item.$_)'" }) -join " AND "
             } else {
                 # Fallback or error handling if table is not mapped
                 $Condition = "ComputerName = '$($Item.ComputerName)'"
@@ -101,10 +110,17 @@ function Convert-ToSimpleFormat {
         [Object]$Value
     )
 
-    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [String]) {
+    # Handle array values
+    if ($Value -is [System.Array] -and $Value.Count -eq 1) {
+        # If it's a single-element array, return that single element
+        return $Value[0]
+    }
+    elseif ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [String]) {
+        # If it's a complex array, return it as a compressed JSON string
         return ($Value | ConvertTo-Json -Compress)
     }
     elseif ($Value -is [Int64]) {
+        # If it's a long integer, convert to string
         return $Value.ToString()
     }
     return $Value
