@@ -1,16 +1,20 @@
 ﻿Param(
-    [string]$SqlServer = "server.domain.com", # Specify SQL ServerName
-    [string]$Database = "Inventory", # Specify DatabaseName
-    [string]$JsonFilesPath = "D:\InventoryParsed",  # Update with the path to your JSON files
-    [string]$logFilePath = "D:\Logs\InventorySQLlog.log"  # Define log file path
+    [string]$SqlServer = "sqlserver01.domain.com", # Specify SQL Server Name
+    [string]$Database = "Inventory", # Specify Database Name
+    [string]$JsonFilesPath = "F:\InventoryOutput",  # Update with the path to your JSON files
+    [string]$logFilePath = "f:\Logs\InventorySQLlog.log"  # Define log file path
 )
 
-# PowerShell Script to Update SQL Tables from JSON Files
 
-# Import required assembly for SQL Server connectivity
-Add-Type -AssemblyName "System.Data"
+# Install required modules (if not already installed)
+# Install-Module -Name Az -AllowClobber -Force
+# Install-Module -Name SqlServer -AllowClobber -Force
 
-$ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
+# Sign in to your Azure account
+Connect-AzAccount -Identity
+
+# Get the access token from Azure AD
+$accessToken = (Get-AzAccessToken -ResourceUrl "https://database.windows.net/").Token
 
 # Define a dictionary mapping table names to key columns
 $KeyColumnsMap = @{
@@ -26,7 +30,7 @@ $KeyColumnsMap = @{
     "Services" = @("ComputerName", "Name")    
 }
 
-
+# Function to update or insert SQL records from a JSON file
 function Update-SqlTableFromJson {
     param (
         [string]$JsonFilePath
@@ -35,13 +39,6 @@ function Update-SqlTableFromJson {
     try {
         $JsonContent = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
         $TableName = [IO.Path]::GetFileNameWithoutExtension($JsonFilePath)
-
-        $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
-        $SqlConnection.ConnectionString = $ConnectionString
-        $SqlConnection.Open()
-
-        # Create SQL command
-        $SqlCommand = $SqlConnection.CreateCommand()
 
         foreach ($Item in $JsonContent) {
             $Columns = ($Item.PSObject.Properties | ForEach-Object { "[$($_.Name)]" }) -join ", "
@@ -61,8 +58,7 @@ function Update-SqlTableFromJson {
 
             # Build the SQL command to check if the record exists
             $SqlCheckExistsCommand = "SELECT COUNT(*) FROM [$TableName] WHERE $Condition"
-            $SqlCommand.CommandText = $SqlCheckExistsCommand
-            $RecordExists = $SqlCommand.ExecuteScalar()
+            $RecordExists = Invoke-SqlCmd -ServerInstance $SqlServer -Database $Database -AccessToken $accessToken -Query $SqlCheckExistsCommand | Select-Object -ExpandProperty Column1
 
             if ($RecordExists -gt 0) {
                 # If record exists, perform an UPDATE
@@ -71,9 +67,8 @@ function Update-SqlTableFromJson {
                 }) -join ", "
 
                 $SqlUpdateCommand = "UPDATE [$TableName] SET $SetColumns WHERE $Condition"
-                $SqlCommand.CommandText = $SqlUpdateCommand
                 try {
-                    $SqlCommand.ExecuteNonQuery() | Out-Null
+                    Invoke-SqlCmd -ServerInstance $SqlServer -Database $Database -AccessToken $accessToken -Query $SqlUpdateCommand
                 } catch {
                     $errorMessage = "Error updating table $TableName : $($_.Exception.Message)`nSQL Command: $SqlUpdateCommand"
                     $errorMessage | Out-File -FilePath $logFilePath -Append
@@ -82,9 +77,8 @@ function Update-SqlTableFromJson {
             } else {
                 # If no record exists, perform an INSERT
                 $SqlInsertCommand = "INSERT INTO [$TableName] ($Columns) VALUES ($Values)"
-                $SqlCommand.CommandText = $SqlInsertCommand
                 try {
-                    $SqlCommand.ExecuteNonQuery() | Out-Null
+                    Invoke-SqlCmd -ServerInstance $SqlServer -Database $Database -AccessToken $accessToken -Query $SqlInsertCommand
                 } catch {
                     $errorMessage = "Error inserting into table $TableName : $($_.Exception.Message)`nSQL Command: $SqlInsertCommand"
                     $errorMessage | Out-File -FilePath $logFilePath -Append
@@ -95,8 +89,6 @@ function Update-SqlTableFromJson {
         # Customized output message
         $ComputerName = $JsonContent.ComputerName | Select-Object -Unique
         Write-Host "Table $TableName updated for $ComputerName"
-
-        $SqlConnection.Close()
 
     }
     catch {
@@ -126,9 +118,12 @@ function Convert-ToSimpleFormat {
     return $Value
 }
 
+
 # Iterate over each JSON file and update the corresponding table
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
-    ($(get-Date) + " Updating table from file: " + $($_.FullName)) | Out-File -FilePath $logFilePath -Append
+    Write-output ((get-Date).ToString() + " Updating table from file: " + $($_.FullName))
+    ((get-Date).ToString() + " Updating table from file: " + $($_.FullName)) | Out-File -FilePath $logFilePath -Append
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
+
 exit 0
