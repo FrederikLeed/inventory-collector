@@ -531,8 +531,8 @@ function Get-AutoRunInfo {
     try {
         # Collect AutoRun information
         $autoRunData = Get-CimInstance Win32_StartupCommand |
-                       Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
-                                     Name, Command, Location, User
+        Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
+                      Name, Command, Location, @{Name='UserName'; Expression={$_.User}}
 
         # Returning the collected data
         $autoRunData | ForEach-Object {
