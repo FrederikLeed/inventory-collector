@@ -128,7 +128,9 @@ function Convert-ToSimpleFormat {
 
 # Iterate over each JSON file and update the corresponding table
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
-    ($(get-Date) + " Updating table from file: " + $($_.FullName)) | Out-File -FilePath $logFilePath -Append
+    Write-output ((get-Date).ToString() + " Updating table from file: " + $($_.FullName))
+    ((get-Date).ToString() + " Updating table from file: " + $($_.FullName)) | Out-File -FilePath $logFilePath -Append
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
+
 exit 0
