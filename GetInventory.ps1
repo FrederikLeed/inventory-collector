@@ -18,7 +18,6 @@ UserProfileList
 Services
 InstalledUpdates
 ScheduledTasks
-SecurityLogEvent4624Summary
 "@
 
 # Split the string into an array by line breaks
