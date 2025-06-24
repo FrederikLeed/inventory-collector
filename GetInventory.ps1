@@ -18,6 +18,7 @@ UserProfileList
 Services
 InstalledUpdates
 ScheduledTasks
+MPComputerStatus
 "@
 
 # Split the string into an array by line breaks
@@ -188,7 +189,16 @@ function Get-SystemInfo {
         } else {
             $domainInfo = $compSysInfo.Workgroup
         }
-        
+
+        # Collecting last applied GPO information
+        $gpresult = gpresult /r /scope computer
+        foreach ($line in $gpresult) {
+            if ($line -match "Last time Group Policy was applied:\s+(.*)") {
+                $lastApplied = $matches[1].Trim()
+                #Write-Output "Computer GPO last applied: $lastApplied"
+                #break
+            }
+        }
 
         # Calculating total RAM
         $totalRam = ($ramInfo | Measure-Object -Property Capacity -Sum).Sum / 1GB
@@ -202,6 +212,7 @@ function Get-SystemInfo {
             CPU = $cpuInfo
             TotalRAM_GB = [Math]::Round($totalRam, 2)
             DomainOrWorkgroup = $domainInfo
+            GPOLastApplied = $lastApplied
         }
 
         # Logging success
@@ -545,6 +556,39 @@ function Get-AutoRunInfo {
     }
 }
 
+#function det get data from get-mgcomputerstatus
+# Function to get Microsoft Defender status information
+function Get-MpComputerStatusInfo {
+    param(
+        [string]$ComputerName,
+        [string]$LogFilePath
+    )
+
+    try {
+        # Retrieve Defender status information dynamically
+        $mpStatus = Invoke-Command -ComputerName $ComputerName -ScriptBlock { Get-MpComputerStatus | Select-Object * } -ErrorAction Stop
+
+        # Exclude problematic CIM-related properties dynamically
+        $excludedProperties = 'CimClass', 'CimInstanceProperties', 'CimSystemProperties', 'PSComputerName', 'PSShowComputerName', 'RunspaceId'
+
+        # Create a clean object dynamically with exclusions
+        $cleanMpStatus = $mpStatus | Select-Object -Property * -ExcludeProperty $excludedProperties
+
+        # Add ComputerName explicitly
+        $mpStatusData = $cleanMpStatus | Select-Object *, @{Name='ComputerName'; Expression={$ComputerName}}
+
+        # Logging success
+        Write-Log "Successfully retrieved Defender status for $ComputerName" $LogFilePath
+
+        # Return collected data
+        return $mpStatusData
+    }
+    catch {
+        # Logging errors
+        Write-Log "Error encountered in Get-MpComputerStatusInfo: $_" $LogFilePath
+        throw $_
+    }
+}
 
 # Function to get informatil about fileshares
 function Get-ShareAccessInfo {
@@ -729,6 +773,7 @@ $scriptBlock = {
             "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "InstalledUpdates" { $data = Get-InstalledUpdates -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "ScheduledTasks" { $data = Get-ScheduledTasks -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            "MPComputerStatus" { $data = Get-MpComputerStatusInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
             "SecurityLogEvent4624Summary" { $data = Get-SecurityLogEvent4624Summary -ComputerName $ComputerName -LogFilePath $LogFilePath }            
         }
 
