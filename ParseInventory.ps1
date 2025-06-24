@@ -24,7 +24,13 @@ function Write-Log {
 
 # Process each zip file
 Get-ChildItem -Path $fileSharePath -Filter "*.zip" | ForEach-Object {
+
     $zipFile = $_.FullName
+    # Check if the zip file exists
+    if(-not($zipFile)){
+        $hasErrors = $true
+    }
+
     Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
 
     Get-ChildItem -Path $extractPath -Filter "*.zip" | ForEach-Object {
