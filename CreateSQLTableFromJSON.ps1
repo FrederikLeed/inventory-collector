@@ -1,11 +1,11 @@
-﻿Param(
+Param(
     [string]$SqlServer = "sqlsrv01.domain.com", # Specify SQL ServerName
     [string]$Database = "inventory", # Specify DatabaseName
     [string]$JsonFilesPath = "D:\InventoryParsed"  # Update with the path to your JSON files
 )
 
-# Import required assembly for SQL Server connectivity
-Add-Type -AssemblyName "System.Data"
+# Dot-source shared SQL helpers
+. (Join-Path -Path $PSScriptRoot -ChildPath "SqlHelpers.ps1")
 
 # Define SQL Server connection details
 $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
@@ -16,17 +16,23 @@ function Test-SqlTableExists {
         [string]$TableName
     )
 
+    Test-SqlIdentifier -Name $TableName -Context "table name"
+
     $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
     $SqlConnection.ConnectionString = $ConnectionString
-    $SqlConnection.Open()
+    try {
+        $SqlConnection.Open()
 
-    $SqlCommand = $SqlConnection.CreateCommand()
-    $SqlCommand.CommandText = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '$TableName'"
-    $result = $SqlCommand.ExecuteScalar()
+        $SqlCommand = $SqlConnection.CreateCommand()
+        $SqlCommand.CommandText = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @TableName"
+        $SqlCommand.Parameters.AddWithValue("@TableName", $TableName) | Out-Null
+        $result = $SqlCommand.ExecuteScalar()
 
-    $SqlConnection.Close()
-
-    return $result -gt 0
+        return $result -gt 0
+    }
+    finally {
+        $SqlConnection.Dispose()
+    }
 }
 
 # Function to get the current schema of a table
@@ -35,19 +41,25 @@ function Get-SqlTableSchema {
         [string]$TableName
     )
 
+    Test-SqlIdentifier -Name $TableName -Context "table name"
+
     $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
     $SqlConnection.ConnectionString = $ConnectionString
-    $SqlConnection.Open()
+    try {
+        $SqlConnection.Open()
 
-    $SqlCommand = $SqlConnection.CreateCommand()
-    $SqlCommand.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '$TableName'"
-    $Adapter = New-Object System.Data.SqlClient.SqlDataAdapter $SqlCommand
-    $DataSet = New-Object System.Data.DataSet
-    $Adapter.Fill($DataSet)
+        $SqlCommand = $SqlConnection.CreateCommand()
+        $SqlCommand.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @TableName"
+        $SqlCommand.Parameters.AddWithValue("@TableName", $TableName) | Out-Null
+        $Adapter = New-Object System.Data.SqlClient.SqlDataAdapter $SqlCommand
+        $DataSet = New-Object System.Data.DataSet
+        $Adapter.Fill($DataSet)
 
-    $SqlConnection.Close()
-
-    return $DataSet.Tables[0].Rows | ForEach-Object { $_.COLUMN_NAME }
+        return $DataSet.Tables[0].Rows | ForEach-Object { $_.COLUMN_NAME }
+    }
+    finally {
+        $SqlConnection.Dispose()
+    }
 }
 
 # Function to create a SQL table from a JSON schema
@@ -58,12 +70,16 @@ function Create-SqlTableFromJson {
     )
 
     try {
+        Test-SqlIdentifier -Name $TableName -Context "table name"
+
         # Start building the SQL CREATE TABLE command
         $SqlCreateTableCommand = "CREATE TABLE [$TableName] ("
 
         # Process each property in the JSON object to create column definitions
         foreach ($Property in $FirstJsonItem.PSObject.Properties) {
             $ColumnName = $Property.Name
+            Test-SqlIdentifier -Name $ColumnName -Context "column name"
+
             $DataType = switch ($Property.TypeNameOfValue) {
                 "System.String" { "NVARCHAR(MAX)" }
                 "System.Int32" { "INT" }
@@ -81,17 +97,19 @@ function Create-SqlTableFromJson {
         # Create and open SQL connection
         $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
         $SqlConnection.ConnectionString = $ConnectionString
-        $SqlConnection.Open()
+        try {
+            $SqlConnection.Open()
 
-        # Execute the SQL command
-        $SqlCommand = $SqlConnection.CreateCommand()
-        $SqlCommand.CommandText = $SqlCreateTableCommand
-        $SqlCommand.ExecuteNonQuery()
+            # Execute the SQL command
+            $SqlCommand = $SqlConnection.CreateCommand()
+            $SqlCommand.CommandText = $SqlCreateTableCommand
+            $SqlCommand.ExecuteNonQuery()
 
-        # Close the SQL connection
-        $SqlConnection.Close()
-
-        Write-Host "Table $TableName created successfully."
+            Write-Host "Table $TableName created successfully."
+        }
+        finally {
+            $SqlConnection.Dispose()
+        }
     }
     catch {
         Write-Error "An error occurred while creating $TableName : $_"
@@ -107,19 +125,25 @@ function Add-SqlColumn {
     )
 
     try {
+        Test-SqlIdentifier -Name $TableName -Context "table name"
+        Test-SqlIdentifier -Name $ColumnName -Context "column name"
+
         $SqlAddColumnCommand = "ALTER TABLE [$TableName] ADD [$ColumnName] $DataType"
 
         $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
         $SqlConnection.ConnectionString = $ConnectionString
-        $SqlConnection.Open()
+        try {
+            $SqlConnection.Open()
 
-        $SqlCommand = $SqlConnection.CreateCommand()
-        $SqlCommand.CommandText = $SqlAddColumnCommand
-        $SqlCommand.ExecuteNonQuery()
+            $SqlCommand = $SqlConnection.CreateCommand()
+            $SqlCommand.CommandText = $SqlAddColumnCommand
+            $SqlCommand.ExecuteNonQuery()
 
-        $SqlConnection.Close()
-
-        Write-Host "Column $ColumnName added to $TableName."
+            Write-Host "Column $ColumnName added to $TableName."
+        }
+        finally {
+            $SqlConnection.Dispose()
+        }
     }
     catch {
         Write-Error "An error occurred while adding column $ColumnName to $TableName : $_"
@@ -134,19 +158,25 @@ function Remove-SqlColumn {
     )
 
     try {
+        Test-SqlIdentifier -Name $TableName -Context "table name"
+        Test-SqlIdentifier -Name $ColumnName -Context "column name"
+
         $SqlRemoveColumnCommand = "ALTER TABLE [$TableName] DROP COLUMN [$ColumnName]"
 
         $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
         $SqlConnection.ConnectionString = $ConnectionString
-        $SqlConnection.Open()
+        try {
+            $SqlConnection.Open()
 
-        $SqlCommand = $SqlConnection.CreateCommand()
-        $SqlCommand.CommandText = $SqlRemoveColumnCommand
-        $SqlCommand.ExecuteNonQuery()
+            $SqlCommand = $SqlConnection.CreateCommand()
+            $SqlCommand.CommandText = $SqlRemoveColumnCommand
+            $SqlCommand.ExecuteNonQuery()
 
-        $SqlConnection.Close()
-
-        Write-Host "Column $ColumnName removed from $TableName."
+            Write-Host "Column $ColumnName removed from $TableName."
+        }
+        finally {
+            $SqlConnection.Dispose()
+        }
     }
     catch {
         Write-Error "An error occurred while removing column $ColumnName from $TableName : $_"
