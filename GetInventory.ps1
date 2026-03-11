@@ -121,12 +121,13 @@ function Get-LocalUserGroupMemberships {
         # Initialize an array to hold output data
         $userData = @()
 
+        # Retrieve all groups once (outside the user loop for performance)
+        $groups = $adsi.Children | Where-Object { $_.SchemaClassName -eq 'group' }
+
         foreach ($user in $users) {
             # Initialize an array to hold user's group memberships
             $groupMemberships = @()
 
-            # Retrieve all groups
-            $groups = $adsi.Children | Where-Object { $_.SchemaClassName -eq 'group' }
             foreach ($group in $groups) {
                 # Check if the user is a member of the group
                 $isMember = $group.Invoke("IsMember", $user.Path)
@@ -178,10 +179,10 @@ function Get-SystemInfo {
 
     try {
         # Collecting basic system information
-        $osInfo = Get-WmiObject -Class Win32_OperatingSystem -ComputerName $ComputerName
-        $cpuInfo = (Get-WmiObject -Class Win32_Processor -ComputerName $ComputerName | Measure-Object -Property NumberOfCores -Sum).Sum
-        $ramInfo = Get-WmiObject -Class Win32_PhysicalMemory -ComputerName $ComputerName
-        $compSysInfo = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $ComputerName
+        $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
+        $cpuInfo = (Get-CimInstance -ClassName Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum
+        $ramInfo = Get-CimInstance -ClassName Win32_PhysicalMemory
+        $compSysInfo = Get-CimInstance -ClassName Win32_ComputerSystem
 
         # Determining if the computer is domain-joined or in a workgroup
         if ($compSysInfo.PartOfDomain) {
@@ -202,7 +203,7 @@ function Get-SystemInfo {
 
         # Calculating total RAM
         $totalRam = ($ramInfo | Measure-Object -Property Capacity -Sum).Sum / 1GB
-        $lastbootuptime = ($osInfo | Select-Object @{LABEL='LastBootUpTime';EXPRESSION={$_.ConverttoDateTime($_.lastbootuptime)}}).lastbootuptime
+        $lastbootuptime = $osInfo.LastBootUpTime
         # Creating custom object to hold system information
         $systemInfo = [PSCustomObject]@{
             ComputerName = $ComputerName
@@ -236,7 +237,7 @@ function Get-DiskSpace {
 
     try {
         # Collecting disk space information
-        $diskInfo = Get-WmiObject -Class Win32_LogicalDisk -ComputerName $ComputerName -Filter "DriveType=3"
+        $diskInfo = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DriveType=3"
 
         # Creating an array to hold disk space details for each drive
         $disks = foreach ($disk in $diskInfo) {
@@ -370,7 +371,7 @@ function Get-InstalledUpdates {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-InstalledUpdates: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -405,7 +406,7 @@ function Get-PersonalCertificates {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-PersonalCertificates: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -436,7 +437,7 @@ function Get-UserProfileList {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-UserProfileList: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -449,7 +450,7 @@ function Get-Services {
 
     try {
         # Collecting service information
-        $Services = Get-WmiObject "Win32_Service" -ErrorAction Stop |
+        $Services = Get-CimInstance -ClassName Win32_Service -ErrorAction Stop |
             Where-Object {$_.StartName -and $_.StartName -notmatch "LocalSystem|LocalService|NetworkService|NT Service"} |
             Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
                           DisplayName, Name, State, StartMode, StartName, Description
@@ -462,7 +463,7 @@ function Get-Services {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-Services: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -526,8 +527,8 @@ function Get-ScheduledTasks {
         return $customTasksInfo
     } catch {
         # Logging errors
-        Write-Log "Error encountered in Get-NonSystemScheduledTasks: $_" $LogFilePath
-        #throw $_
+        Write-Log "Error encountered in Get-ScheduledTasks: $_" $LogFilePath
+        throw $_
     }
 }
 
@@ -552,7 +553,7 @@ function Get-AutoRunInfo {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-AutoRunInfo: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -565,17 +566,15 @@ function Get-MpComputerStatusInfo {
     )
 
     try {
-        # Retrieve Defender status information dynamically
-        $mpStatus = Invoke-Command -ComputerName $ComputerName -ScriptBlock { Get-MpComputerStatus | Select-Object * } -ErrorAction Stop
+        # Retrieve Defender status locally (script runs on the target via GPO, no need to remote)
+        $mpStatus = Get-MpComputerStatus -ErrorAction Stop
 
-        # Exclude problematic CIM-related properties dynamically
-        $excludedProperties = 'CimClass', 'CimInstanceProperties', 'CimSystemProperties', 'PSComputerName', 'PSShowComputerName', 'RunspaceId'
+        # Exclude CIM metadata properties
+        $excludedProperties = 'CimClass', 'CimInstanceProperties', 'CimSystemProperties'
 
-        # Create a clean object dynamically with exclusions
-        $cleanMpStatus = $mpStatus | Select-Object -Property * -ExcludeProperty $excludedProperties
-
-        # Add ComputerName explicitly
-        $mpStatusData = $cleanMpStatus | Select-Object *, @{Name='ComputerName'; Expression={$ComputerName}}
+        # Create a clean object with ComputerName added
+        $mpStatusData = $mpStatus | Select-Object -Property * -ExcludeProperty $excludedProperties |
+            Select-Object *, @{Name='ComputerName'; Expression={$ComputerName}}
 
         # Logging success
         Write-Log "Successfully retrieved Defender status for $ComputerName" $LogFilePath
@@ -586,7 +585,7 @@ function Get-MpComputerStatusInfo {
     catch {
         # Logging errors
         Write-Log "Error encountered in Get-MpComputerStatusInfo: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -600,7 +599,7 @@ function Get-ShareAccessInfo {
     try {
         # Collecting share information and excluding specific system shares
         $excludedShares = "ADMIN$", "C$", "D$", "E$", "F$", "IPC$"
-        $shares = Get-WmiObject -Class Win32_Share -ComputerName $ComputerName |
+        $shares = Get-CimInstance -ClassName Win32_Share |
                   Where-Object { $excludedShares -notcontains $_.Name }
 
         # Collecting share access information
@@ -650,7 +649,7 @@ function Get-ShareAccessInfo {
     } catch {
         # Logging errors
         Write-Log "Error encountered in Get-ShareAccessInfo: $_" $LogFilePath
-        #throw $_
+        throw $_
     }
 }
 
@@ -662,39 +661,53 @@ function Export-ToJson {
 
 # Main script block for querying metrics
 $scriptBlock = {
-    param($metrics, $ComputerName, $baseFolderPath, $zipFolderPath)
+    param($metrics, $ComputerName, $baseFolderPath, $zipFolderPath, $centralFilesharePath)
+
+    $successCount = 0
+    $failedMetrics = @()
 
     foreach ($metric in $metrics) {
         # Define file paths
         $folderPath = Join-Path -Path $baseFolderPath -ChildPath $metric
-        $OutputFilePath = Join-Path -Path $folderPath -ChildPath "$metric_$ComputerName.json"
-        $LogFilePath = Join-Path -Path $folderPath -ChildPath "$metric_$ComputerName.log"
+        $OutputFilePath = Join-Path -Path $folderPath -ChildPath "${metric}_${ComputerName}.json"
+        $LogFilePath = Join-Path -Path $folderPath -ChildPath "${metric}_${ComputerName}.log"
 
         # Ensure folder exists
         if (-not (Test-Path $folderPath)) {
             New-Item -Path $folderPath -ItemType Directory
         }
 
-        # Call respective function based on metric
-        switch ($metric) {
-            "GroupMembers" { $data = Get-GroupMembers -groups $groups -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "LocalUsers" { $data = Get-LocalUserGroupMemberships -groups $groups -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "SystemInfo" { $data = Get-SystemInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "DiskSpace" { $data = Get-DiskSpace -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "InstalledSoftware" { $data = Get-InstalledSoftware -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "PersonalCertificates" { $data = Get-PersonalCertificates -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "AutoRunInfo" { $data = Get-AutoRunInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "ShareAccessInfo" { $data = Get-ShareAccessInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "UserProfileList" { $data = Get-UserProfileList -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "InstalledUpdates" { $data = Get-InstalledUpdates -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "ScheduledTasks" { $data = Get-ScheduledTasks -ComputerName $ComputerName -LogFilePath $LogFilePath }
-            "MPComputerStatus" { $data = Get-MpComputerStatusInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
-        }
+        try {
+            # Call respective function based on metric
+            $data = $null
+            switch ($metric) {
+                "GroupMembers" { $data = Get-GroupMembers -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "LocalUsers" { $data = Get-LocalUserGroupMemberships -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "SystemInfo" { $data = Get-SystemInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "DiskSpace" { $data = Get-DiskSpace -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "InstalledSoftware" { $data = Get-InstalledSoftware -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "PersonalCertificates" { $data = Get-PersonalCertificates -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "AutoRunInfo" { $data = Get-AutoRunInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "ShareAccessInfo" { $data = Get-ShareAccessInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "UserProfileList" { $data = Get-UserProfileList -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "Services" { $data = Get-Services -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "InstalledUpdates" { $data = Get-InstalledUpdates -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "ScheduledTasks" { $data = Get-ScheduledTasks -ComputerName $ComputerName -LogFilePath $LogFilePath }
+                "MPComputerStatus" { $data = Get-MpComputerStatusInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
+            }
 
-        # Export data to JSON
-        Export-ToJson -Data $data -FilePath $OutputFilePath
+            # Export data to JSON
+            Export-ToJson -Data $data -FilePath $OutputFilePath
+            $successCount++
+        } catch {
+            Write-Log "FAILED to collect metric '$metric': $_" $LogFilePath
+            $failedMetrics += $metric
+        }
     }
+
+    # Log collection summary
+    $summaryLogPath = Join-Path -Path $baseFolderPath -ChildPath "${ComputerName}_summary.log"
+    Write-Log "Collection complete: $successCount/$($metrics.Count) metrics succeeded. Failed: $($failedMetrics -join ', ')" $summaryLogPath
 
     # Ensure that the zip folder path is clear
     Get-ChildItem -Path $zipFolderPath | Remove-Item -Force
@@ -717,4 +730,4 @@ $scriptBlock = {
 }
 
 # Invoke the script block
-Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $metrics, $ComputerName, $baseFolderPath, $zipFolderPath
+Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $metrics, $ComputerName, $baseFolderPath, $zipFolderPath, $centralFilesharePath
