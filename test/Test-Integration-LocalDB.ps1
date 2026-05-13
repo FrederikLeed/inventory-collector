@@ -470,6 +470,108 @@ WHERE object_id = OBJECT_ID('dbo.InstalledSoftware') AND name = 'ComputerName'
 }
 
 # ============================================================
+Write-Host "`n=== Test 8: V2 Phase 2 happy path (RunId + CollectionRuns end-to-end) ===" -ForegroundColor Cyan
+# ============================================================
+# Simulates the GetInventory -> ParseInventory -> SQL load path with V2 shape:
+# every record carries a RunId, CollectionRuns.json holds per-run metadata.
+# Asserts Computers + CollectionRuns get upserted by the load script and that
+# fact rows land with RunId populated. Distinct from Test 7 (which exercises
+# Phase 1 *migration* from V1-state data).
+
+$Phase2Folder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\Phase2HappyPath'
+if (Test-Path $Phase2Folder) { Remove-Item $Phase2Folder -Recurse -Force }
+New-Item -ItemType Directory -Path $Phase2Folder -Force | Out-Null
+
+$phase2Run1 = ([guid]::NewGuid()).ToString()
+$phase2Run2 = ([guid]::NewGuid()).ToString()
+$phase2Started = (Get-Date).ToUniversalTime().ToString('o')
+
+# Two records with RunId, simulating ParseInventory aggregated output
+@(
+    [PSCustomObject]@{ ComputerName = 'PHASE2-A'; Note = 'first';  RunId = $phase2Run1 }
+    [PSCustomObject]@{ ComputerName = 'PHASE2-B'; Note = 'second'; RunId = $phase2Run2 }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase2Folder 'Phase2Demo.json') -Encoding UTF8
+
+# CollectionRuns.json: one entry per (ComputerName, RunId)
+@(
+    [PSCustomObject]@{
+        RunId = $phase2Run1; ComputerName = 'PHASE2-A'; StartedAt = $phase2Started
+        CompletedAt = $phase2Started; Status = 'Parsed'
+        MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
+    }
+    [PSCustomObject]@{
+        RunId = $phase2Run2; ComputerName = 'PHASE2-B'; StartedAt = $phase2Started
+        CompletedAt = $phase2Started; Status = 'Parsed'
+        MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
+    }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase2Folder 'CollectionRuns.json') -Encoding UTF8
+
+try {
+    & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase2Folder
+    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase2Folder -logFilePath $LogFile
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        # CollectionRuns picked up both new runs
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns WHERE RunId IN (@r1, @r2)"
+        $cmd.Parameters.AddWithValue('@r1', [Guid]::Parse($phase2Run1)) | Out-Null
+        $cmd.Parameters.AddWithValue('@r2', [Guid]::Parse($phase2Run2)) | Out-Null
+        $runsLoaded = $cmd.ExecuteScalar()
+        Assert-True -Condition ($runsLoaded -eq 2) -Message "Phase 2: CollectionRuns has both new RunIds ($runsLoaded/2)"
+
+        # Computers upserted for both new ComputerNames
+        $cmd.Parameters.Clear()
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers WHERE ComputerName IN ('PHASE2-A', 'PHASE2-B')"
+        $newComputers = $cmd.ExecuteScalar()
+        Assert-True -Condition ($newComputers -eq 2) -Message "Phase 2: both Computers upserted ($newComputers/2)"
+
+        # Fact rows landed with the correct RunId
+        $cmd.Parameters.Clear()
+        $cmd.CommandText = "SELECT RunId FROM dbo.Phase2Demo WHERE ComputerName = @cn"
+        $cmd.Parameters.AddWithValue('@cn', 'PHASE2-A') | Out-Null
+        $factRunId = $cmd.ExecuteScalar()
+        Assert-True -Condition ($factRunId -is [Guid] -and $factRunId.ToString() -eq $phase2Run1) `
+            -Message "Phase 2: Phase2Demo[PHASE2-A].RunId = expected ($factRunId)"
+
+        # LastRunId on Computers points at the new run
+        $cmd.Parameters.Clear()
+        $cmd.CommandText = "SELECT LastRunId FROM dbo.Computers WHERE ComputerName = 'PHASE2-B'"
+        $lastRunId = $cmd.ExecuteScalar()
+        Assert-True -Condition ($lastRunId -is [Guid] -and $lastRunId.ToString() -eq $phase2Run2) `
+            -Message "Phase 2: Computers[PHASE2-B].LastRunId points at the new run"
+    } finally {
+        $conn.Dispose()
+    }
+
+    # Idempotency: re-running the same Phase 2 load shouldn't duplicate
+    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase2Folder -logFilePath $LogFile
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns WHERE RunId IN (@r1, @r2)"
+        $cmd.Parameters.AddWithValue('@r1', [Guid]::Parse($phase2Run1)) | Out-Null
+        $cmd.Parameters.AddWithValue('@r2', [Guid]::Parse($phase2Run2)) | Out-Null
+        $runsAfter = $cmd.ExecuteScalar()
+        Assert-True -Condition ($runsAfter -eq 2) -Message "Phase 2: CollectionRuns unchanged on re-run ($runsAfter still 2)"
+
+        $cmd.Parameters.Clear()
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Phase2Demo"
+        $factCount = $cmd.ExecuteScalar()
+        Assert-True -Condition ($factCount -eq 2) -Message "Phase 2: Phase2Demo unchanged on re-run ($factCount still 2)"
+    } finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: Phase 2 test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
 Write-Host "`n=== Cleanup ===" -ForegroundColor Cyan
 # ============================================================
 
@@ -488,7 +590,8 @@ finally {
 # Clean up temp files
 if (Test-Path $TrimmedDataPath) { Remove-Item $TrimmedDataPath -Recurse -Force }
 if (Test-Path $InjectionFolder) { Remove-Item $InjectionFolder -Recurse -Force }
-if (Test-Path $SchemaFolder) { Remove-Item $SchemaFolder -Recurse -Force }
+if (Test-Path $SchemaFolder)    { Remove-Item $SchemaFolder    -Recurse -Force }
+if (Test-Path $Phase2Folder)    { Remove-Item $Phase2Folder    -Recurse -Force }
 if (Test-Path $LogFile) { Remove-Item $LogFile -Force }
 
 # ============================================================

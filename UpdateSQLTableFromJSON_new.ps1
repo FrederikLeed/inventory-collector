@@ -36,6 +36,80 @@ $KeyColumnsMap = @{
 }
 
 
+# Schema V2: load the per-run metadata aggregated by ParseInventory.ps1.
+# Upserts dbo.Computers (LastSeenAt, LastRunId) and inserts new rows into
+# dbo.CollectionRuns, skipping RunIds that already exist (idempotent).
+function Import-CollectionRunsJson {
+    param (
+        [string]$JsonFilePath
+    )
+
+    if (-not (Test-Path $JsonFilePath)) { return }
+
+    try {
+        $runs = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
+        if (-not ($runs -is [System.Array])) { $runs = @($runs) }
+
+        $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
+        $SqlConnection.ConnectionString = $ConnectionString
+        try {
+            $SqlConnection.Open()
+            $SqlCommand = $SqlConnection.CreateCommand()
+
+            foreach ($run in $runs) {
+                if (-not $run.RunId -or -not $run.ComputerName) { continue }
+
+                # Upsert Computers
+                $SqlCommand.Parameters.Clear()
+                $SqlCommand.CommandText = @"
+MERGE dbo.Computers AS target
+USING (SELECT @cn AS ComputerName, @rid AS RunId, @loadedAt AS LoadedAt) AS source
+ON (target.ComputerName = source.ComputerName)
+WHEN MATCHED THEN
+    UPDATE SET LastSeenAt = source.LoadedAt, LastRunId = source.RunId, IsActive = 1, DeactivatedAt = NULL
+WHEN NOT MATCHED THEN
+    INSERT (ComputerName, FirstSeenAt, LastSeenAt, LastRunId)
+    VALUES (source.ComputerName, source.LoadedAt, source.LoadedAt, source.RunId);
+"@
+                $SqlCommand.Parameters.AddWithValue('@cn',  $run.ComputerName) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@rid', [System.Guid]::Parse([string]$run.RunId)) | Out-Null
+                $loadedAt = if ($run.CompletedAt) { [DateTime]::Parse([string]$run.CompletedAt) } else { [DateTime]::UtcNow }
+                $SqlCommand.Parameters.AddWithValue('@loadedAt', $loadedAt) | Out-Null
+                $SqlCommand.ExecuteNonQuery() | Out-Null
+
+                # Insert into CollectionRuns if RunId is new
+                $SqlCommand.Parameters.Clear()
+                $SqlCommand.CommandText = @"
+IF NOT EXISTS (SELECT 1 FROM dbo.CollectionRuns WHERE RunId = @rid)
+INSERT INTO dbo.CollectionRuns
+    (RunId, ComputerName, StartedAt, CompletedAt, Status, MetricsSucceeded, MetricsFailed, FailedMetrics, LoadedAt)
+VALUES
+    (@rid, @cn, @started, @completed, 'Loaded', @ms, @mf, @fm, SYSUTCDATETIME());
+"@
+                $SqlCommand.Parameters.AddWithValue('@rid', [System.Guid]::Parse([string]$run.RunId)) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@cn',  $run.ComputerName) | Out-Null
+                $started   = if ($run.StartedAt)   { [DateTime]::Parse([string]$run.StartedAt) }   else { [DateTime]::UtcNow }
+                $completed = if ($run.CompletedAt) { [DateTime]::Parse([string]$run.CompletedAt) } else { $started }
+                $SqlCommand.Parameters.AddWithValue('@started',   $started)   | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@completed', $completed) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@ms', $(if ($null -ne $run.MetricsSucceeded) { [int]$run.MetricsSucceeded } else { [DBNull]::Value })) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@mf', $(if ($null -ne $run.MetricsFailed)    { [int]$run.MetricsFailed }    else { [DBNull]::Value })) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@fm', $(if ($run.FailedMetrics) { [string]$run.FailedMetrics } else { [DBNull]::Value })) | Out-Null
+                $SqlCommand.ExecuteNonQuery() | Out-Null
+            }
+
+            Write-Host "CollectionRuns imported: $($runs.Count) run(s)"
+        }
+        finally {
+            $SqlConnection.Dispose()
+        }
+    }
+    catch {
+        $script:hasErrors = $true
+        Write-Error "Error importing CollectionRuns from $JsonFilePath : $_"
+    }
+}
+
 function Update-SqlTableFromJson {
     param (
         [string]$JsonFilePath
@@ -120,10 +194,23 @@ function Update-SqlTableFromJson {
     }
 }
 
-# Iterate over each JSON file and update the corresponding table
-Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
-    Write-output ((get-Date).ToString() + " Updating table from file: " + $($_.FullName))
-    ((get-Date).ToString() + " Updating table from file: " + $($_.FullName)) | Out-File -FilePath $logFilePath -Append
+# Schema V2: ingest CollectionRuns + Computers metadata FIRST so the FK targets
+# are in place before any fact rows reference them. The file is optional - old
+# zips lacking _collection-meta.json simply skip this step and rely on Phase 1
+# migration / fallback to populate the run identity later.
+$collectionRunsPath = Join-Path -Path $JsonFilesPath -ChildPath 'CollectionRuns.json'
+if (Test-Path $collectionRunsPath) {
+    Import-CollectionRunsJson -JsonFilePath $collectionRunsPath
+}
+
+# Iterate over each JSON file and update the corresponding table.
+# CollectionRuns.json is handled above; skip it here so it doesn't get fed
+# through the generic table loader.
+Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | Where-Object {
+    [IO.Path]::GetFileNameWithoutExtension($_.Name) -ne 'CollectionRuns'
+} | ForEach-Object {
+    Write-Output ((Get-Date).ToString() + " Updating table from file: " + $($_.FullName))
+    ((Get-Date).ToString() + " Updating table from file: " + $($_.FullName)) | Out-File -FilePath $logFilePath -Append
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
 

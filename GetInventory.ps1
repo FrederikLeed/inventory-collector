@@ -1,8 +1,15 @@
 # Define parameters for the computer name
 param(
     [string]$ComputerName = $env:computerName,
-    [string]$centralFilesharePath = "\\server\InventoryData"    
+    [string]$centralFilesharePath = "\\server\InventoryData"
 )
+
+# Schema V2: every collection cycle has a single run identity carried through
+# into every metric record and into a _collection-meta.json sidecar. The
+# downstream pipeline uses this to populate dbo.CollectionRuns and to make
+# each fact row traceable back to its origin.
+$RunId     = ([guid]::NewGuid()).ToString()
+$StartedAt = (Get-Date).ToUniversalTime().ToString('o')
 
 # Metrics to collect, in order.
 $metrics = @(
@@ -671,7 +678,7 @@ function Export-ToJson {
 
 # Main script block for querying metrics
 $scriptBlock = {
-    param($metrics, $ComputerName, $baseFolderPath, $zipFolderPath, $centralFilesharePath)
+    param($metrics, $ComputerName, $baseFolderPath, $zipFolderPath, $centralFilesharePath, $RunId, $StartedAt)
 
     $successCount = 0
     $failedMetrics = @()
@@ -706,6 +713,21 @@ $scriptBlock = {
                 "MPComputerStatus" { $data = Get-MpComputerStatusInfo -ComputerName $ComputerName -LogFilePath $LogFilePath }
             }
 
+            # Stamp every record in this metric with the RunId. Centralised here
+            # rather than in each Get-* function so adding a new metric doesn't
+            # need to remember to thread RunId through.
+            if ($null -ne $data) {
+                if ($data -is [System.Array]) {
+                    foreach ($r in $data) {
+                        if ($null -ne $r) {
+                            $r | Add-Member -NotePropertyName 'RunId' -NotePropertyValue $RunId -Force
+                        }
+                    }
+                } else {
+                    $data | Add-Member -NotePropertyName 'RunId' -NotePropertyValue $RunId -Force
+                }
+            }
+
             # Export data to JSON
             Export-ToJson -Data $data -FilePath $OutputFilePath
             $successCount++
@@ -719,6 +741,22 @@ $scriptBlock = {
     $summaryLogPath = Join-Path -Path $baseFolderPath -ChildPath "${ComputerName}_summary.log"
     Write-Log "Collection complete: $successCount/$($metrics.Count) metrics succeeded. Failed: $($failedMetrics -join ', ')" $summaryLogPath
 
+    # Schema V2: per-run metadata sidecar. ParseInventory aggregates these into
+    # CollectionRuns.json; the SQL loader inserts each row into dbo.CollectionRuns.
+    $completedAt = (Get-Date).ToUniversalTime().ToString('o')
+    $meta = [PSCustomObject]@{
+        RunId            = $RunId
+        ComputerName     = $ComputerName
+        StartedAt        = $StartedAt
+        CompletedAt      = $completedAt
+        Status           = 'Parsed'  # parser will flip to 'Loaded' on SQL insert
+        MetricsSucceeded = $successCount
+        MetricsFailed    = $failedMetrics.Count
+        FailedMetrics    = ($failedMetrics -join ', ')
+    }
+    $metaPath = Join-Path -Path $baseFolderPath -ChildPath '_collection-meta.json'
+    $meta | ConvertTo-Json -Depth 5 | Out-File -FilePath $metaPath -Encoding UTF8
+
     # Ensure that the zip folder path is clear
     Get-ChildItem -Path $zipFolderPath | Remove-Item -Force
 
@@ -728,7 +766,11 @@ $scriptBlock = {
         Compress-Archive -Path $_.FullName -DestinationPath $metricZipPath
     }
 
-    # Combine all individual zips into one
+    # Include the meta sidecar alongside the per-metric zips so it lands at the
+    # top level of the outer zip (ParseInventory looks for it there).
+    Copy-Item -Path $metaPath -Destination $zipFolderPath -Force
+
+    # Combine all individual zips + meta into one
     $finalZipFile = Join-Path -Path $zipFolderPath -ChildPath "$ComputerName.zip"
     Compress-Archive -Path (Get-ChildItem -Path $zipFolderPath -File).FullName -DestinationPath $finalZipFile
 
@@ -740,4 +782,4 @@ $scriptBlock = {
 }
 
 # Invoke the script block
-Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $metrics, $ComputerName, $baseFolderPath, $zipFolderPath, $centralFilesharePath
+Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $metrics, $ComputerName, $baseFolderPath, $zipFolderPath, $centralFilesharePath, $RunId, $StartedAt

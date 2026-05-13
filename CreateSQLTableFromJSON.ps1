@@ -126,36 +126,48 @@ function New-SqlTableFromJson {
 
         # Start building the SQL CREATE TABLE command
         $SqlCreateTableCommand = "CREATE TABLE [$TableName] ("
+        $columnsFromJson = @{}
 
         # Process each property in the JSON object to create column definitions
         foreach ($Property in $FirstJsonItem.PSObject.Properties) {
             $ColumnName = $Property.Name
             Test-SqlIdentifier -Name $ColumnName -Context "column name"
 
-            # Special-case ComputerName to NVARCHAR(128); it's the join column
-            # and Schema V2 standardises it. Everything else keeps the V1
-            # NVARCHAR(MAX) / INT / BIT mapping for backward compatibility.
-            if ($ColumnName -eq 'ComputerName') {
-                $DataType = "NVARCHAR(128)"
-            } else {
-                $DataType = switch ($Property.TypeNameOfValue) {
-                    "System.String" { "NVARCHAR(MAX)" }
-                    "System.Int32"  { "INT" }
-                    "System.Boolean"{ "BIT" }
-                    Default         { "NVARCHAR(MAX)" }
+            # Special-case columns whose semantics are fixed by Schema V2.
+            # Everything else keeps the V1 NVARCHAR(MAX) / INT / BIT mapping.
+            switch ($ColumnName) {
+                'ComputerName' { $DataType = "NVARCHAR(128)" }
+                'RunId'        { $DataType = "UNIQUEIDENTIFIER" }
+                'CreatedAt'    { $DataType = "DATETIME2(3)" }
+                default {
+                    $DataType = switch ($Property.TypeNameOfValue) {
+                        "System.String" { "NVARCHAR(MAX)" }
+                        "System.Int32"  { "INT" }
+                        "System.Boolean"{ "BIT" }
+                        Default         { "NVARCHAR(MAX)" }
+                    }
                 }
             }
 
             $SqlCreateTableCommand += "[$ColumnName] $DataType, "
+            $columnsFromJson[$ColumnName] = $true
         }
 
         # V1 columns: Id PK + UpdateTimeStamp (kept for Phase 1 compatibility,
         # dropped in Phase 3 after the pipeline emits RunId end-to-end).
-        # V2 columns: RunId + CreatedAt added by Phase 1 - NULLable for now.
         $SqlCreateTableCommand += "[Id] INT IDENTITY(1,1) PRIMARY KEY, "
-        $SqlCreateTableCommand += "[UpdateTimeStamp] DATETIME DEFAULT GETDATE(), "
-        $SqlCreateTableCommand += "[RunId] UNIQUEIDENTIFIER NULL, "
-        $SqlCreateTableCommand += "[CreatedAt] DATETIME2(3) NULL)"
+        $SqlCreateTableCommand += "[UpdateTimeStamp] DATETIME DEFAULT GETDATE()"
+
+        # V2 columns: RunId + CreatedAt - only add if the JSON didn't already
+        # carry them as properties (Phase 2 pipeline output puts RunId on every
+        # record).
+        if (-not $columnsFromJson.ContainsKey('RunId')) {
+            $SqlCreateTableCommand += ", [RunId] UNIQUEIDENTIFIER NULL"
+        }
+        if (-not $columnsFromJson.ContainsKey('CreatedAt')) {
+            $SqlCreateTableCommand += ", [CreatedAt] DATETIME2(3) NULL"
+        }
+        $SqlCreateTableCommand += ")"
 
         # Create and open SQL connection
         $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
@@ -299,8 +311,13 @@ function Update-SqlTableFromJson {
 # Make sure the V2 infrastructure tables exist before processing any JSON
 Initialize-V2InfrastructureTables
 
-# Loop through each JSON file in the folder and create/update tables
-Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
+# Loop through each JSON file in the folder and create/update tables.
+# CollectionRuns.json is the per-run metadata aggregated by ParseInventory.ps1
+# (Schema V2) and goes into dbo.CollectionRuns directly via the Update script,
+# not into a JSON-derived table.
+Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | Where-Object {
+    [IO.Path]::GetFileNameWithoutExtension($_.Name) -ne 'CollectionRuns'
+} | ForEach-Object {
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
 

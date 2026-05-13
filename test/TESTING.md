@@ -74,7 +74,13 @@ What it does:
    and asserts the infrastructure tables (`Computers`, `CollectionRuns`)
    were created and backfilled correctly, `RunId` / `CreatedAt` were
    added to every fact table, and a second run is a no-op
-10. Drops the database and prints a pass/fail summary
+10. Exercises the Schema V2 Phase 2 pipeline shape end-to-end: feeds
+    a folder containing JSON records with `RunId` plus a
+    `CollectionRuns.json` sidecar, runs Create + Update, and asserts
+    `Computers` / `CollectionRuns` get upserted from the sidecar and
+    fact rows land with `RunId` populated; verifies idempotency on
+    re-run
+11. Drops the database and prints a pass/fail summary
 
 Exit code is 0 on green, 1 if any assertion failed.
 

@@ -13,6 +13,7 @@ New-Item -Path $extractPath, $nestedExtractPath, $aggregateOutputPath -ItemType 
 
 # Script-scoped so writes from inside ForEach-Object script blocks propagate.
 $script:aggregatedData = @{}
+$script:collectionRuns = @()   # Schema V2: one entry per _collection-meta.json found
 $script:hasErrors      = $false
 $script:zipsProcessed  = 0
 $script:zipsFailed     = 0
@@ -29,6 +30,20 @@ Get-ChildItem -Path $fileSharePath -Filter "*.zip" | ForEach-Object {
         $script:hasErrors = $true
         $script:zipsFailed++
         return
+    }
+
+    # Schema V2: pick up the per-run metadata sidecar if present at the top
+    # level of the outer zip. GetInventory >= V2 writes this; older zips
+    # without it are silently skipped (the SQL loader can fall back).
+    $metaPath = Join-Path -Path $extractPath -ChildPath '_collection-meta.json'
+    if (Test-Path $metaPath) {
+        try {
+            $metaData = Get-Content -Path $metaPath -Raw | ConvertFrom-Json
+            $script:collectionRuns += $metaData
+        } catch {
+            Write-Host "Error reading collection meta from $metaPath : $_"
+            $script:hasErrors = $true
+        }
     }
 
     Get-ChildItem -Path $extractPath -Filter "*.zip" | ForEach-Object {
@@ -91,8 +106,16 @@ foreach ($metricName in $script:aggregatedData.Keys) {
     }
 }
 
+# Schema V2: aggregate the per-run metadata into CollectionRuns.json. The SQL
+# loader picks this up and writes to dbo.CollectionRuns + dbo.Computers.
+if ($script:collectionRuns.Count -gt 0) {
+    $runsPath = Join-Path -Path $aggregateOutputPath -ChildPath 'CollectionRuns.json'
+    $script:collectionRuns | ConvertTo-Json -Depth 5 | Out-File -FilePath $runsPath -Encoding UTF8
+    Write-Host "CollectionRuns aggregated: $($script:collectionRuns.Count) run(s)"
+}
+
 Write-Host "Aggregated data files saved to: $aggregateOutputPath"
-Write-Host "Summary: zips processed=$($script:zipsProcessed), zips failed=$($script:zipsFailed), json processed=$($script:jsonProcessed), json failed=$($script:jsonFailed)"
+Write-Host "Summary: zips processed=$($script:zipsProcessed), zips failed=$($script:zipsFailed), json processed=$($script:jsonProcessed), json failed=$($script:jsonFailed), runs=$($script:collectionRuns.Count)"
 
 if ($script:hasErrors) {
     exit 1
