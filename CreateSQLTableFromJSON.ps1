@@ -17,8 +17,11 @@ $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=Tr
 # so the scheduler's step gating actually breaks the chain on failure.
 $script:hasErrors = $false
 
-# Initialise V2 infrastructure tables (Computers + CollectionRuns) on every run.
-# Idempotent: skips when already present. Mirrors docs/migrations/V2_Phase1.sql.
+# Initialise the full V2 infrastructure in one idempotent pass so a fresh DB
+# is one-step: Computers, CollectionRuns, the differential InstalledUpdates
+# table, and the cross-table frontend views. Fact tables are created later by
+# New-SqlTableFromJson with their JSON-derived columns plus the V2 spine
+# (RunId NOT NULL, FKs, vCurrent<Table> view). No separate "migration" needed.
 function Initialize-V2InfrastructureTables {
     $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
     $SqlConnection.ConnectionString = $ConnectionString
@@ -49,11 +52,51 @@ BEGIN
         MetricsSucceeded  INT              NULL,
         MetricsFailed     INT              NULL,
         FailedMetrics     NVARCHAR(MAX)    NULL,
-        LoadedAt          DATETIME2(3)     NULL
+        LoadedAt          DATETIME2(3)     NULL,
+        CONSTRAINT FK_CollectionRuns_Computer FOREIGN KEY (ComputerName) REFERENCES dbo.Computers(ComputerName)
     );
     CREATE INDEX IX_CollectionRuns_Computer_Started
         ON dbo.CollectionRuns (ComputerName, StartedAt DESC);
 END
+
+-- InstalledUpdates: differential model (not snapshot). One row per
+-- (ComputerName, Title) with FirstSeenRunId/LastSeenRunId/UninstalledAt.
+-- Avoids the ~45M-row daily-snapshot blow-up.
+IF OBJECT_ID('dbo.InstalledUpdates', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.InstalledUpdates (
+        Id               INT IDENTITY(1,1) PRIMARY KEY,
+        ComputerName     NVARCHAR(128)    NOT NULL,
+        Title            NVARCHAR(512)    NOT NULL,
+        InstalledOn      DATE             NULL,
+        ServiceID        NVARCHAR(64)     NULL,
+        FirstSeenRunId   UNIQUEIDENTIFIER NOT NULL,
+        LastSeenRunId    UNIQUEIDENTIFIER NOT NULL,
+        FirstSeenAt      DATETIME2(3)     NOT NULL DEFAULT SYSUTCDATETIME(),
+        LastSeenAt       DATETIME2(3)     NOT NULL DEFAULT SYSUTCDATETIME(),
+        UninstalledAt    DATETIME2(3)     NULL,
+        CONSTRAINT FK_InstalledUpdates_Computer  FOREIGN KEY (ComputerName)   REFERENCES dbo.Computers(ComputerName),
+        CONSTRAINT FK_InstalledUpdates_FirstRun  FOREIGN KEY (FirstSeenRunId) REFERENCES dbo.CollectionRuns(RunId),
+        CONSTRAINT FK_InstalledUpdates_LastRun   FOREIGN KEY (LastSeenRunId)  REFERENCES dbo.CollectionRuns(RunId)
+    );
+    CREATE UNIQUE INDEX UX_InstalledUpdates_Natural ON dbo.InstalledUpdates (ComputerName, Title);
+END
+"@
+        $SqlCommand.ExecuteNonQuery() | Out-Null
+
+        # Cross-table views (CREATE OR ALTER lives outside the IF blocks so
+        # each fresh run refreshes them in case the definitions change).
+        $SqlCommand.CommandText = @"
+CREATE OR ALTER VIEW dbo.vCurrentInstalledUpdates AS
+SELECT * FROM dbo.InstalledUpdates WHERE UninstalledAt IS NULL;
+"@
+        $SqlCommand.ExecuteNonQuery() | Out-Null
+
+        $SqlCommand.CommandText = @"
+CREATE OR ALTER VIEW dbo.vStaleComputers AS
+SELECT c.*, DATEDIFF(HOUR, c.LastSeenAt, SYSUTCDATETIME()) AS HoursSinceLastSeen
+FROM dbo.Computers c
+WHERE c.IsActive = 1 AND c.LastSeenAt < DATEADD(HOUR, -25, SYSUTCDATETIME());
 "@
         $SqlCommand.ExecuteNonQuery() | Out-Null
     }
@@ -114,6 +157,51 @@ function Get-SqlTableSchema {
     }
 }
 
+# Creates the vCurrent<TableName> view: latest-Loaded-run snapshot per
+# ComputerName. The frontend (Power BI / Grafana / Excel) reads these
+# views directly - they're the public contract.
+function New-VCurrentView {
+    param ([string]$TableName)
+
+    try {
+        Test-SqlIdentifier -Name $TableName -Context "table name"
+
+        $sql = @"
+CREATE OR ALTER VIEW dbo.vCurrent$TableName AS
+WITH LatestRuns AS (
+    SELECT r.ComputerName, r.RunId
+    FROM dbo.CollectionRuns r
+    INNER JOIN (
+        SELECT ComputerName, MAX(StartedAt) AS LatestAt
+        FROM dbo.CollectionRuns
+        WHERE Status = 'Loaded'
+        GROUP BY ComputerName
+    ) m ON r.ComputerName = m.ComputerName AND r.StartedAt = m.LatestAt
+)
+SELECT s.*
+FROM dbo.[$TableName] s
+INNER JOIN LatestRuns lr ON s.RunId = lr.RunId;
+"@
+
+        $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
+        $SqlConnection.ConnectionString = $ConnectionString
+        try {
+            $SqlConnection.Open()
+            $SqlCommand = $SqlConnection.CreateCommand()
+            $SqlCommand.CommandText = $sql
+            $SqlCommand.ExecuteNonQuery() | Out-Null
+            Write-Host "View vCurrent$TableName created/refreshed."
+        }
+        finally {
+            $SqlConnection.Dispose()
+        }
+    }
+    catch {
+        $script:hasErrors = $true
+        Write-Error "An error occurred while creating vCurrent$TableName : $_"
+    }
+}
+
 # Function to create a SQL table from a JSON schema
 function New-SqlTableFromJson {
     param (
@@ -136,9 +224,9 @@ function New-SqlTableFromJson {
             # Special-case columns whose semantics are fixed by Schema V2.
             # Everything else keeps the V1 NVARCHAR(MAX) / INT / BIT mapping.
             switch ($ColumnName) {
-                'ComputerName' { $DataType = "NVARCHAR(128)" }
-                'RunId'        { $DataType = "UNIQUEIDENTIFIER" }
-                'CreatedAt'    { $DataType = "DATETIME2(3)" }
+                'ComputerName' { $DataType = "NVARCHAR(128) NOT NULL" }
+                'RunId'        { $DataType = "UNIQUEIDENTIFIER NOT NULL" }
+                'CreatedAt'    { $DataType = "DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()" }
                 default {
                     $DataType = switch ($Property.TypeNameOfValue) {
                         "System.String" { "NVARCHAR(MAX)" }
@@ -153,20 +241,27 @@ function New-SqlTableFromJson {
             $columnsFromJson[$ColumnName] = $true
         }
 
-        # V1 columns: Id PK + UpdateTimeStamp (kept for Phase 1 compatibility,
-        # dropped in Phase 3 after the pipeline emits RunId end-to-end).
-        $SqlCreateTableCommand += "[Id] INT IDENTITY(1,1) PRIMARY KEY, "
-        $SqlCreateTableCommand += "[UpdateTimeStamp] DATETIME DEFAULT GETDATE()"
+        # Surrogate PK for backwards-compat with any tooling that joins on Id.
+        $SqlCreateTableCommand += "[Id] INT IDENTITY(1,1) PRIMARY KEY"
 
-        # V2 columns: RunId + CreatedAt - only add if the JSON didn't already
-        # carry them as properties (Phase 2 pipeline output puts RunId on every
-        # record).
+        # V2 spine: RunId + CreatedAt always present. Add them if the JSON
+        # didn't supply them (the V2 pipeline always supplies RunId; the
+        # CreatedAt clause covers data flowing in via other entry points).
         if (-not $columnsFromJson.ContainsKey('RunId')) {
-            $SqlCreateTableCommand += ", [RunId] UNIQUEIDENTIFIER NULL"
+            $SqlCreateTableCommand += ", [RunId] UNIQUEIDENTIFIER NOT NULL"
+            $columnsFromJson['RunId'] = $true
         }
         if (-not $columnsFromJson.ContainsKey('CreatedAt')) {
-            $SqlCreateTableCommand += ", [CreatedAt] DATETIME2(3) NULL"
+            $SqlCreateTableCommand += ", [CreatedAt] DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()"
         }
+
+        # FK constraints inline. Retention's ON DELETE CASCADE on RunId is the
+        # whole reason this works as a single DELETE FROM CollectionRuns.
+        if ($columnsFromJson.ContainsKey('ComputerName')) {
+            $SqlCreateTableCommand += ", CONSTRAINT [FK_${TableName}_Computer] FOREIGN KEY ([ComputerName]) REFERENCES dbo.Computers([ComputerName])"
+        }
+        $SqlCreateTableCommand += ", CONSTRAINT [FK_${TableName}_Run] FOREIGN KEY ([RunId]) REFERENCES dbo.CollectionRuns([RunId]) ON DELETE CASCADE"
+
         $SqlCreateTableCommand += ")"
 
         # Create and open SQL connection
@@ -185,6 +280,10 @@ function New-SqlTableFromJson {
         finally {
             $SqlConnection.Dispose()
         }
+
+        # vCurrent view sits on top of the table; create it right after so the
+        # frontend contract is in place from the first run.
+        New-VCurrentView -TableName $TableName
     }
     catch {
         $script:hasErrors = $true
@@ -308,16 +407,17 @@ function Update-SqlTableFromJson {
     }
 }
 
-# Make sure the V2 infrastructure tables exist before processing any JSON
+# Make sure the V2 infrastructure (Computers, CollectionRuns, InstalledUpdates,
+# cross-table views) exists before processing any JSON. Idempotent.
 Initialize-V2InfrastructureTables
 
 # Loop through each JSON file in the folder and create/update tables.
-# CollectionRuns.json is the per-run metadata aggregated by ParseInventory.ps1
-# (Schema V2) and goes into dbo.CollectionRuns directly via the Update script,
-# not into a JSON-derived table.
-# InstalledUpdates.json (Phase 3) is loaded via the differential MERGE in the
-# Update script; the table itself is created by docs/migrations/V2_Phase3.sql
-# with the differential schema, so we don't derive a table from its JSON shape.
+# CollectionRuns.json carries per-run metadata aggregated by ParseInventory.ps1
+# - the Update script loads it directly into dbo.CollectionRuns; not a JSON-
+# derived table.
+# InstalledUpdates.json is loaded via the differential MERGE in the Update
+# script; the table itself is created by Initialize-V2InfrastructureTables
+# above with the differential schema.
 $SkipTables = @('CollectionRuns', 'InstalledUpdates')
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | Where-Object {
     [IO.Path]::GetFileNameWithoutExtension($_.Name) -notin $SkipTables

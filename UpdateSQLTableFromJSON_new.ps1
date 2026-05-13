@@ -46,6 +46,22 @@ function Import-CollectionRunsJson {
 
     if (-not (Test-Path $JsonFilePath)) { return }
 
+    # ConvertFrom-Json auto-converts ISO 8601 strings to [DateTime]. Locale-
+    # sensitive [DateTime]::Parse round-trips on the formatted-string output
+    # blow up under non-en-US cultures, so always accept the [DateTime] as-is
+    # and only Parse (with InvariantCulture) when the field arrived as a
+    # string for some reason.
+    function ConvertTo-DateTimeOrDefault {
+        param($Value, $Default)
+        if ($null -eq $Value) { return $Default }
+        if ($Value -is [DateTime]) { return $Value }
+        if ($Value -is [string]) {
+            if ([string]::IsNullOrWhiteSpace($Value)) { return $Default }
+            return [DateTime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+        }
+        return [DateTime]$Value
+    }
+
     try {
         $runs = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
         if (-not ($runs -is [System.Array])) { $runs = @($runs) }
@@ -73,7 +89,7 @@ WHEN NOT MATCHED THEN
 "@
                 $SqlCommand.Parameters.AddWithValue('@cn',  $run.ComputerName) | Out-Null
                 $SqlCommand.Parameters.AddWithValue('@rid', [System.Guid]::Parse([string]$run.RunId)) | Out-Null
-                $loadedAt = if ($run.CompletedAt) { [DateTime]::Parse([string]$run.CompletedAt) } else { [DateTime]::UtcNow }
+                $loadedAt = ConvertTo-DateTimeOrDefault -Value $run.CompletedAt -Default ([DateTime]::UtcNow)
                 $SqlCommand.Parameters.AddWithValue('@loadedAt', $loadedAt) | Out-Null
                 $SqlCommand.ExecuteNonQuery() | Out-Null
 
@@ -88,8 +104,8 @@ VALUES
 "@
                 $SqlCommand.Parameters.AddWithValue('@rid', [System.Guid]::Parse([string]$run.RunId)) | Out-Null
                 $SqlCommand.Parameters.AddWithValue('@cn',  $run.ComputerName) | Out-Null
-                $started   = if ($run.StartedAt)   { [DateTime]::Parse([string]$run.StartedAt) }   else { [DateTime]::UtcNow }
-                $completed = if ($run.CompletedAt) { [DateTime]::Parse([string]$run.CompletedAt) } else { $started }
+                $started   = ConvertTo-DateTimeOrDefault -Value $run.StartedAt   -Default ([DateTime]::UtcNow)
+                $completed = ConvertTo-DateTimeOrDefault -Value $run.CompletedAt -Default $started
                 $SqlCommand.Parameters.AddWithValue('@started',   $started)   | Out-Null
                 $SqlCommand.Parameters.AddWithValue('@completed', $completed) | Out-Null
                 $SqlCommand.Parameters.AddWithValue('@ms', $(if ($null -ne $run.MetricsSucceeded) { [int]$run.MetricsSucceeded } else { [DBNull]::Value })) | Out-Null
@@ -110,7 +126,7 @@ VALUES
     }
 }
 
-# Schema V2 Phase 3: load InstalledUpdates as a differential set per
+# Schema V2: load InstalledUpdates as a differential set per
 # (ComputerName, Title). Each row is MERGEd - existing pairs get their
 # LastSeenRunId / LastSeenAt refreshed (and UninstalledAt cleared if they
 # had been marked uninstalled); new pairs INSERT with First = Last = @RunId.
@@ -220,7 +236,7 @@ function Update-SqlTableFromJson {
 
         Test-SqlIdentifier -Name $TableName -Context "table name"
 
-        # Schema V2 Phase 3: InstalledUpdates uses the differential model.
+        # Schema V2: InstalledUpdates uses the differential model.
         if ($TableName -eq 'InstalledUpdates') {
             Import-InstalledUpdatesDifferential -JsonContent $JsonContent
             return

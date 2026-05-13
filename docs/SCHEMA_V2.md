@@ -315,52 +315,24 @@ For 1000 servers, daily cadence, 90 days retention:
 
 Rough total: **~5–10 GB** across the snapshot tables. Manageable on commodity SQL Server. If a particular table grows louder than expected, the response is per-table retention tightening or columnstore — both can be added without schema change.
 
-## Migration plan
+## Install / upgrade path
 
-In-place ALTER, three phases. No big-bang drop.
+A **fresh install** is one-step: `CreateSQLTableFromJSON.ps1` produces the final V2 schema (Computers, CollectionRuns, the differential InstalledUpdates, fact tables with `RunId NOT NULL` + inline FKs, `vCurrent<TableName>` views, `vCurrentInstalledUpdates`, `vStaleComputers`) on first run. No setup SQL needed.
 
-### Phase 1 — infrastructure (zero behavior change)
+An **upgrade from a V1 database** (the pre-V2 schema with `UpdateTimeStamp` and no Computers/CollectionRuns) uses `docs/migrations/V2_Phase1.sql`. It:
 
-1. Create `Computers` and `CollectionRuns`.
-2. Backfill `Computers` from `DISTINCT ComputerName` across existing fact tables. Set `FirstSeenAt = MIN(UpdateTimeStamp)`, `LastSeenAt = MAX(UpdateTimeStamp)`.
-3. `ALTER TABLE` each fact table to add `RunId` (nullable for now) and `CreatedAt` (defaulted to existing `UpdateTimeStamp`).
-4. Backfill `RunId` with a single "v1-migration" GUID per computer. Insert matching rows into `CollectionRuns` with `Status = 'Loaded'` and `StartedAt = MAX(UpdateTimeStamp)`.
-5. Restructure `InstalledUpdates` into the differential model (drop existing rows, recreate empty — old snapshot data isn't compatible with the differential shape). Fleet will repopulate naturally on the next collection cycle.
-6. Tighten `RunId` to `NOT NULL`. Add FKs. Add UNIQUE indexes.
-7. Widen `ComputerName` everywhere to `NVARCHAR(128)`.
+1. Creates `Computers` and `CollectionRuns`.
+2. Backfills `Computers` from `DISTINCT ComputerName` across existing fact tables, with `FirstSeenAt = MIN(UpdateTimeStamp)` / `LastSeenAt = MAX(UpdateTimeStamp)`.
+3. `ALTER TABLE` each fact table to add `RunId` and `CreatedAt`, backfilled.
+4. Synthesizes one CollectionRuns row per Computer to anchor the backfilled RunIds.
+5. Widens `ComputerName` everywhere to `NVARCHAR(128)`.
 
-After Phase 1 the DB has the new shape, existing scripts still work, frontend doesn't exist yet.
+Phase 1 is the only standalone migration. The remaining steps from earlier drafts (drop `UpdateTimeStamp`, add FKs, switch `InstalledUpdates` to differential, create the views) are now part of the fresh-install DDL emitted by the load scripts — there is no Phase 3 SQL to run.
 
-### Phase 2 — pipeline emits `RunId`
-
-1. Update `GetInventory.ps1` to generate `RunId` and emit `_collection-meta.json`.
-2. Update `ParseInventory.ps1` to aggregate `CollectionRuns.json`.
-3. Update load scripts to insert `Computers` / `CollectionRuns` rows.
-4. Keep upsert behavior on snapshot tables for one or two collection cycles to validate that `RunId` is being threaded through.
-
-### Phase 3 — switch to append-only + add views + retention
-
-1. Drop the `KeyColumnsMap`-based UPDATE branch in the load script. Snapshot tables become append-only.
-2. Switch `InstalledUpdates` load to the differential MERGE pattern.
-3. Add the `vCurrent*` views.
-4. Add `Run-RetentionPolicy.ps1` and wire it into `scheduler.ps1` (weekly).
-5. Drop `UpdateTimeStamp` from each fact table.
-
-After Phase 3, every collection cycle is a new snapshot. Frontend can be built against the views.
+The pipeline emits V2 shape end-to-end: `GetInventory.ps1` generates a `RunId` per collection and writes `_collection-meta.json`; `ParseInventory.ps1` aggregates `CollectionRuns.json`; `UpdateSQLTableFromJSON_new.ps1` upserts Computers / CollectionRuns and then appends fact rows by natural key.
 
 ## What this doesn't change
 
 - Endpoint code structure: `GetInventory.ps1`'s `Get-*` functions stay as-is, just gain `RunId` on output.
 - Zip transport, file share layout, scheduler chain.
 - The on-prem vs Azure split — both still need this refactor; Azure variant remains TODO under MSI rewrite.
-- Existing tests pass against today's schema. New tests will be added as Phase 1/2/3 land.
-
-## Next steps
-
-Phase 1 lands as a single PR with:
-
-- DDL migration script (`docs/migrations/V2_Phase1.sql`) — idempotent, safe to re-run.
-- Updated `CreateSQLTableFromJSON.ps1` so new tables get the V2 columns by default.
-- An integration-test addition that verifies Phase 1 backfill is correct on the fixture.
-
-Phase 2 and Phase 3 land as separate PRs after Phase 1 has been verified in a real environment.

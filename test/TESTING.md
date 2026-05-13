@@ -59,41 +59,49 @@ against your own data without copying it into the repo:
 What it does:
 
 1. Creates a fresh `InventoryTest` database on `MSSQLLocalDB`
-2. Trims each JSON to 1000 rows (skips `InstalledUpdates` and `Invoice`)
-3. Runs `CreateSQLTableFromJSON.ps1` and asserts every table + key
-   columns exist
-4. Runs `UpdateSQLTableFromJSON_new.ps1` and asserts non-zero row counts
-5. Re-runs the update and asserts no duplicates (UPDATE path works)
+2. Trims each JSON to 1000 rows (skips `InstalledUpdates` and `Invoice`),
+   stamps each record with a per-Computer `RunId`, and writes a synthetic
+   `CollectionRuns.json` so the V1-shape fixture matches what the V2
+   pipeline emits today
+3. Runs `CreateSQLTableFromJSON.ps1` and asserts the V2 schema lands on a
+   fresh DB in one step: `Computers` / `CollectionRuns` /
+   `InstalledUpdates` infrastructure tables, fact tables with `RunId NOT
+   NULL` + inline FK constraints, `vCurrent<TableName>` views, and the
+   cross-table `vCurrentInstalledUpdates` / `vStaleComputers` views — no
+   `UpdateTimeStamp`, no separate migration step
+4. Runs `UpdateSQLTableFromJSON_new.ps1` and asserts non-zero row counts,
+   that `Computers` + `CollectionRuns` get populated from the sidecar,
+   and that every fact row has a non-NULL `RunId`
+5. Re-runs the update and asserts no duplicates (`INSERT WHERE NOT
+   EXISTS` is idempotent on same-RunId reload)
 6. Inserts an SQL injection payload through a parameterized command and
    asserts the table survives + value is stored as a literal string
 7. Drives a JSON injection payload through the actual Update script
    and verifies the row landed as literal data
 8. Exercises the schema-evolution branch: adds a column to a JSON,
    re-runs Create, verifies `ALTER TABLE` happened
-9. Applies `docs/migrations/V2_Phase1.sql` against the populated DB
-   and asserts the infrastructure tables (`Computers`, `CollectionRuns`)
-   were created and backfilled correctly, `RunId` / `CreatedAt` were
-   added to every fact table, and a second run is a no-op
-10. Exercises the Schema V2 Phase 2 pipeline shape end-to-end: feeds
-    a folder containing JSON records with `RunId` plus a
-    `CollectionRuns.json` sidecar, runs Create + Update, and asserts
-    `Computers` / `CollectionRuns` get upserted from the sidecar and
-    fact rows land with `RunId` populated; verifies idempotency on
-    re-run
-11. Applies `docs/migrations/V2_Phase3.sql` and asserts the FK
-    constraints on `RunId` / `ComputerName` are in place, the
-    `UpdateTimeStamp` column is dropped, `InstalledUpdates` is in its
-    differential shape, and the `vCurrent*` views exist
-12. Verifies append-only behaviour: re-loading the same data with a
+9. Exercises the V2 happy path end-to-end on a fresh-Computer payload:
+   asserts `Computers` / `CollectionRuns` get upserted from the
+   sidecar, fact rows land with the correct `RunId`, and idempotency
+   holds on re-run
+10. Verifies append-only behaviour: re-loading the same data with a
     new `RunId` adds new rows (snapshot) rather than overwriting;
     same `RunId` again is idempotent
-13. Verifies a `vCurrent*` view returns the latest snapshot per
+11. Verifies a `vCurrent*` view returns the latest snapshot per
     `ComputerName`
-14. Verifies the `InstalledUpdates` differential model: across two
+12. Verifies the `InstalledUpdates` differential model: across two
     runs with overlapping but non-identical KB sets, dropped KBs get
     `UninstalledAt` set, returning KBs clear it, new KBs insert with
     `FirstSeenRunId` = `LastSeenRunId`
-15. Drops the database and prints a pass/fail summary
+13. Drops the database and prints a pass/fail summary
+
+The `docs/migrations/V2_Phase1.sql` script is the V1 → V2 upgrade path
+for an existing pre-V2 database (no Computers/CollectionRuns, fact
+tables still on the `UpdateTimeStamp` shape). It is not exercised by
+the integration test because the test always starts from a fresh DB
+that the load scripts populate in V2 shape directly. Customers
+upgrading a V1 database should run Phase 1 manually before pointing
+the new load scripts at it.
 
 Exit code is 0 on green, 1 if any assertion failed.
 
