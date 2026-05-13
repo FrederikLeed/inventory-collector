@@ -4,25 +4,22 @@ param(
     [string]$centralFilesharePath = "\\server\InventoryData"    
 )
 
-# Set the metrics to query
-$metrics = @"
-GroupMembers
-LocalUsers
-SystemInfo
-DiskSpace
-InstalledSoftware
-PersonalCertificates
-AutoRunInfo
-ShareAccessInfo
-UserProfileList
-Services
-InstalledUpdates
-ScheduledTasks
-MPComputerStatus
-"@
-
-# Split the string into an array by line breaks
-[array]$metrics = $metrics.Split([Environment]::NewLine, [StringSplitOptions]::RemoveEmptyEntries)
+# Metrics to collect, in order.
+$metrics = @(
+    'GroupMembers'
+    'LocalUsers'
+    'SystemInfo'
+    'DiskSpace'
+    'InstalledSoftware'
+    'PersonalCertificates'
+    'AutoRunInfo'
+    'ShareAccessInfo'
+    'UserProfileList'
+    'Services'
+    'InstalledUpdates'
+    'ScheduledTasks'
+    'MPComputerStatus'
+)
 # Define base folder paths
 $baseFolderPath = $env:SystemDrive + "\Inv" + (New-Guid).ToString().Substring(0,8)
 $zipFolderPath = ($baseFolderPath + "\Zipped")
@@ -493,7 +490,7 @@ function Get-ScheduledTasks {
 
     try {
         # Retrieving all scheduled tasks from the specified computer
-        $allTasks = Get-ScheduledTask # -CimSession $ComputerName
+        $allTasks = Get-ScheduledTask
 
         # Filtering out tasks running as SYSTEM, LOCAL SERVICE, or NETWORK SERVICE
         $nonSystemTasks = $allTasks | Where-Object { $_.Principal.UserId -notmatch 'SYSTEM|LOCAL SERVICE|NETWORK SERVICE' -and $_.Principal.UserId }
@@ -559,16 +556,12 @@ function Get-AutoRunInfo {
     try {
         # Collect AutoRun information
         $autoRunData = Get-CimInstance Win32_StartupCommand |
-        Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
-                      Name, Command, Location, @{Name='UserName'; Expression={$_.User}}
+            Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
+                          Name, Command, Location, @{Name='UserName'; Expression={$_.User}}
 
-        # Returning the collected data
-        $autoRunData | ForEach-Object {
-            Write-Log "Successfully collected AutoRun information for $($_.Name) on $ComputerName" $LogFilePath
-            $_
-        }
+        Write-Log "Successfully retrieved AutoRun information for $ComputerName" $LogFilePath
+        return $autoRunData
     } catch {
-        # Logging errors
         Write-Log "Error encountered in Get-AutoRunInfo: $_" $LogFilePath
         throw $_
     }

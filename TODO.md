@@ -7,10 +7,3 @@
 ## Medium Priority
 
 - [ ] Add Pester test framework for unit/integration tests
-
-## Low Priority
-
-- [ ] AutoRunInfo logging is per-item instead of per-collection
-- [ ] Metrics list is a here-string split by newlines — use a simple array
-- [ ] Remove -CimSession comment from Get-ScheduledTasks (line 478)
-- [ ] Zip workflow creates intermediate zips then combines — simplify to single zip
