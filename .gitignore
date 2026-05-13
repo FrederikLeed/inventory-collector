@@ -1,3 +1,7 @@
 
 parsetrans.log
-test/sample-data/
+test/sample-data/*
+!test/sample-data/InventoryParsed.zip
+test/SqlLocalDB.msi
+test/last-integration-run.log
+test/tmp.log
