@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- [ ] Fix Azure SQL scripts (legacy/CreateSQLTableFromJSON_azure.ps1, legacy/UpdateSQLTableFromJSON_azure.ps1) — same SQL injection issues as on-prem (now fixed); move back to root once patched
+- [ ] Fix Azure SQL scripts (CreateSQLTableFromJSON_azure.ps1, UpdateSQLTableFromJSON_azure.ps1) — same SQL injection issues as on-prem (now fixed)
 - [ ] Hardcoded server names/paths — move defaults to a shared config or make parameters mandatory
 
 ## Medium Priority
