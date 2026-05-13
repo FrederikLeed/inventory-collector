@@ -315,8 +315,12 @@ Initialize-V2InfrastructureTables
 # CollectionRuns.json is the per-run metadata aggregated by ParseInventory.ps1
 # (Schema V2) and goes into dbo.CollectionRuns directly via the Update script,
 # not into a JSON-derived table.
+# InstalledUpdates.json (Phase 3) is loaded via the differential MERGE in the
+# Update script; the table itself is created by docs/migrations/V2_Phase3.sql
+# with the differential schema, so we don't derive a table from its JSON shape.
+$SkipTables = @('CollectionRuns', 'InstalledUpdates')
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | Where-Object {
-    [IO.Path]::GetFileNameWithoutExtension($_.Name) -ne 'CollectionRuns'
+    [IO.Path]::GetFileNameWithoutExtension($_.Name) -notin $SkipTables
 } | ForEach-Object {
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }

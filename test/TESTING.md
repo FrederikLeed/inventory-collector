@@ -80,7 +80,20 @@ What it does:
     `Computers` / `CollectionRuns` get upserted from the sidecar and
     fact rows land with `RunId` populated; verifies idempotency on
     re-run
-11. Drops the database and prints a pass/fail summary
+11. Applies `docs/migrations/V2_Phase3.sql` and asserts the FK
+    constraints on `RunId` / `ComputerName` are in place, the
+    `UpdateTimeStamp` column is dropped, `InstalledUpdates` is in its
+    differential shape, and the `vCurrent*` views exist
+12. Verifies append-only behaviour: re-loading the same data with a
+    new `RunId` adds new rows (snapshot) rather than overwriting;
+    same `RunId` again is idempotent
+13. Verifies a `vCurrent*` view returns the latest snapshot per
+    `ComputerName`
+14. Verifies the `InstalledUpdates` differential model: across two
+    runs with overlapping but non-identical KB sets, dropped KBs get
+    `UninstalledAt` set, returning KBs clear it, new KBs insert with
+    `FirstSeenRunId` = `LastSeenRunId`
+15. Drops the database and prints a pass/fail summary
 
 Exit code is 0 on green, 1 if any assertion failed.
 

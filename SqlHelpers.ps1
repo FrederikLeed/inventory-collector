@@ -118,17 +118,21 @@ function Add-ParameterizedCondition {
     foreach ($col in $KeyColumns) {
         Test-SqlIdentifier -Name $col -Context "key column name"
 
-        $paramName = "@${Prefix}${k}"
         $value = Convert-ToSimpleFormat $Item.$col
 
-        $conditions += "[$col] = $paramName"
-
+        # SQL Server treats `col = NULL` as UNKNOWN, never matching. For a
+        # natural-key existence check we want NULL to match NULL exactly, so
+        # emit `IS NULL` for null values and skip adding a parameter. Without
+        # this, append-only INSERT WHERE NOT EXISTS on rows with a NULL key
+        # column (e.g. RunId NULL in legacy fixtures) produces duplicates.
         if ($null -eq $value) {
-            $SqlCommand.Parameters.AddWithValue($paramName, [DBNull]::Value) | Out-Null
+            $conditions += "[$col] IS NULL"
         } else {
+            $paramName = "@${Prefix}${k}"
+            $conditions += "[$col] = $paramName"
             $SqlCommand.Parameters.AddWithValue($paramName, $value) | Out-Null
+            $k++
         }
-        $k++
     }
 
     return $conditions -join " AND "

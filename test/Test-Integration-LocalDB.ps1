@@ -572,6 +572,298 @@ try {
 }
 
 # ============================================================
+Write-Host "`n=== Test 9: V2 Phase 3 migration applies ===" -ForegroundColor Cyan
+# ============================================================
+# Runs docs/migrations/V2_Phase3.sql. Asserts UpdateTimeStamp gone from fact
+# tables, FK constraints on RunId/ComputerName exist, vCurrent* views exist,
+# and InstalledUpdates is in the differential shape.
+
+$phase3MigrationPath = Join-Path -Path (Split-Path $PSScriptRoot -Parent) -ChildPath 'docs\migrations\V2_Phase3.sql'
+
+try {
+    Assert-True -Condition (Test-Path $phase3MigrationPath) -Message "Phase 3 migration script exists"
+
+    $migrationSql = Get-Content -Path $phase3MigrationPath -Raw
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandTimeout = 300
+        $cmd.CommandText = $migrationSql
+        $cmd.ExecuteNonQuery() | Out-Null
+
+        # UpdateTimeStamp gone
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.columns WHERE name = 'UpdateTimeStamp' AND object_id = OBJECT_ID('dbo.InstalledSoftware')"
+        $col = $cmd.ExecuteScalar()
+        Assert-True -Condition ($col -eq 0) -Message "Phase 3: InstalledSoftware.UpdateTimeStamp dropped"
+
+        # FK on RunId
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_InstalledSoftware_Run'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: FK_InstalledSoftware_Run exists"
+
+        # FK on ComputerName
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.foreign_keys WHERE name = 'FK_InstalledSoftware_Computer'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: FK_InstalledSoftware_Computer exists"
+
+        # UNIQUE natural-key index lands on InstalledUpdates because Title is
+        # NVARCHAR(512) (indexable). On snapshot tables with NVARCHAR(MAX)
+        # natural-key columns SQL Server rejects the index; that's expected,
+        # idempotency is provided by the INSERT WHERE NOT EXISTS pattern.
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.indexes WHERE name = 'UX_InstalledUpdates_Natural' AND object_id = OBJECT_ID('dbo.InstalledUpdates')"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: UX_InstalledUpdates_Natural index exists"
+
+        # vCurrent* view exists
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name = 'vCurrentInstalledSoftware'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: vCurrentInstalledSoftware view created"
+
+        # InstalledUpdates differential schema
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.InstalledUpdates') AND name IN ('FirstSeenRunId', 'LastSeenRunId', 'UninstalledAt')"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 3) -Message "Phase 3: InstalledUpdates has differential columns"
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name = 'vCurrentInstalledUpdates'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: vCurrentInstalledUpdates view created"
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name = 'vStaleComputers'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: vStaleComputers view created"
+    } finally {
+        $conn.Dispose()
+    }
+
+    # Idempotency
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandTimeout = 300
+        $cmd.CommandText = $migrationSql
+        $cmd.ExecuteNonQuery() | Out-Null
+        Assert-True -Condition $true -Message "Phase 3: migration is idempotent (second run no-op)"
+    } finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: Phase 3 migration test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
+Write-Host "`n=== Test 10: Phase 3 append-only behaviour ===" -ForegroundColor Cyan
+# ============================================================
+# Push another collection for the same Computers in Phase2Demo but with a new
+# RunId. Snapshot tables now append rather than upsert, so the row count
+# should grow. Same RunId again is idempotent (UNIQUE-natural blocks dupes).
+
+$Phase3Folder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\Phase3Append'
+if (Test-Path $Phase3Folder) { Remove-Item $Phase3Folder -Recurse -Force }
+New-Item -ItemType Directory -Path $Phase3Folder -Force | Out-Null
+
+$phase3RunA = ([guid]::NewGuid()).ToString()
+$phase3RunB = ([guid]::NewGuid()).ToString()
+$phase3Started = (Get-Date).ToUniversalTime().ToString('o')
+
+# Two records: same ComputerNames as Test 8, NEW RunIds
+@(
+    [PSCustomObject]@{ ComputerName = 'PHASE2-A'; Note = 'phase3-A'; RunId = $phase3RunA }
+    [PSCustomObject]@{ ComputerName = 'PHASE2-B'; Note = 'phase3-B'; RunId = $phase3RunB }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase3Folder 'Phase2Demo.json') -Encoding UTF8
+
+@(
+    [PSCustomObject]@{
+        RunId = $phase3RunA; ComputerName = 'PHASE2-A'; StartedAt = $phase3Started
+        CompletedAt = $phase3Started; Status = 'Parsed'
+        MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
+    }
+    [PSCustomObject]@{
+        RunId = $phase3RunB; ComputerName = 'PHASE2-B'; StartedAt = $phase3Started
+        CompletedAt = $phase3Started; Status = 'Parsed'
+        MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
+    }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase3Folder 'CollectionRuns.json') -Encoding UTF8
+
+try {
+    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase3Folder -logFilePath $LogFile
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        # Append-only: Phase2Demo now has 4 rows (2 from Test 8 + 2 from Test 10)
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Phase2Demo"
+        $appendCount = $cmd.ExecuteScalar()
+        Assert-True -Condition ($appendCount -eq 4) -Message "Phase 3: Phase2Demo appended (4 rows total: 2 old + 2 new)"
+
+        # Per-ComputerName: 2 RunIds each
+        $cmd.CommandText = "SELECT COUNT(DISTINCT RunId) FROM dbo.Phase2Demo WHERE ComputerName = 'PHASE2-A'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 2) -Message "Phase 3: PHASE2-A has 2 distinct RunIds in Phase2Demo"
+
+        # Re-run with same payload: no duplicates (UX_*_Natural blocks them)
+        & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase3Folder -logFilePath $LogFile
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Phase2Demo"
+        $reRunCount = $cmd.ExecuteScalar()
+        Assert-True -Condition ($reRunCount -eq 4) -Message "Phase 3: same-RunId re-run is idempotent ($reRunCount still 4)"
+    } finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: Phase 3 append-only test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
+Write-Host "`n=== Test 11: vCurrent* view returns latest snapshot ===" -ForegroundColor Cyan
+# ============================================================
+
+try {
+    # Create the view via Phase 3 migration logic, then query it.
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        # Mark Phase 3 runs as Loaded so the view picks them up
+        $cmd.CommandText = "UPDATE dbo.CollectionRuns SET Status = 'Loaded', LoadedAt = SYSUTCDATETIME() WHERE RunId IN (@a, @b)"
+        $cmd.Parameters.AddWithValue('@a', [Guid]::Parse($phase3RunA)) | Out-Null
+        $cmd.Parameters.AddWithValue('@b', [Guid]::Parse($phase3RunB)) | Out-Null
+        $cmd.ExecuteNonQuery() | Out-Null
+
+        # Need the vCurrentPhase2Demo view; the Phase 3 migration creates one per fact table
+        $cmd.Parameters.Clear()
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name = 'vCurrentPhase2Demo'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "Phase 3: vCurrentPhase2Demo view exists"
+
+        # The view should return exactly 2 rows (latest snapshot per ComputerName)
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.vCurrentPhase2Demo"
+        $viewCount = $cmd.ExecuteScalar()
+        Assert-True -Condition ($viewCount -eq 2) -Message "Phase 3: vCurrentPhase2Demo returns 1 row per Computer ($viewCount rows)"
+
+        # And those rows should be the PHASE 3 versions (Note = 'phase3-A'/'phase3-B')
+        $cmd.CommandText = "SELECT Note FROM dbo.vCurrentPhase2Demo WHERE ComputerName = 'PHASE2-A'"
+        $note = $cmd.ExecuteScalar()
+        Assert-True -Condition ($note -eq 'phase3-A') -Message "Phase 3: vCurrentPhase2Demo shows latest Note for PHASE2-A ('$note')"
+    } finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: vCurrent view test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
+Write-Host "`n=== Test 12: InstalledUpdates differential model ===" -ForegroundColor Cyan
+# ============================================================
+# Two collection runs for the same Computer:
+#   Run A: KB1, KB2, KB3
+#   Run B: KB1, KB2, KB4  -> KB3 should get UninstalledAt set, KB4 inserted
+
+$DiffFolder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\InstalledUpdatesDiff'
+if (Test-Path $DiffFolder) { Remove-Item $DiffFolder -Recurse -Force }
+New-Item -ItemType Directory -Path $DiffFolder -Force | Out-Null
+
+$diffRunA = ([guid]::NewGuid()).ToString()
+$diffRunB = ([guid]::NewGuid()).ToString()
+$diffStarted = (Get-Date).ToUniversalTime().ToString('o')
+
+# Helper to write a run worth of InstalledUpdates + matching CollectionRuns
+function Write-DiffRun {
+    param([string]$RunId, [string[]]$Titles, [string]$Folder)
+    $records = @($Titles | ForEach-Object {
+        [PSCustomObject]@{
+            ComputerName = 'DIFF-01'
+            Title        = $_
+            Date         = '2026-01-15'
+            ServiceID    = 'kb-test'
+            RunId        = $RunId
+        }
+    })
+    $records | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Folder 'InstalledUpdates.json') -Encoding UTF8
+
+    @(
+        [PSCustomObject]@{
+            RunId = $RunId; ComputerName = 'DIFF-01'; StartedAt = $diffStarted
+            CompletedAt = $diffStarted; Status = 'Parsed'
+            MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
+        }
+    ) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Folder 'CollectionRuns.json') -Encoding UTF8
+}
+
+try {
+    # Run A: KB1, KB2, KB3
+    Write-DiffRun -RunId $diffRunA -Titles @('KB1', 'KB2', 'KB3') -Folder $DiffFolder
+    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $DiffFolder -logFilePath $LogFile
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.InstalledUpdates WHERE ComputerName = 'DIFF-01'"
+        $countA = $cmd.ExecuteScalar()
+        Assert-True -Condition ($countA -eq 3) -Message "Differential: 3 rows after Run A (KB1, KB2, KB3)"
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.InstalledUpdates WHERE ComputerName = 'DIFF-01' AND UninstalledAt IS NULL"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 3) -Message "Differential: all 3 are active after Run A"
+    } finally {
+        $conn.Dispose()
+    }
+
+    # Run B: KB1, KB2, KB4 (no KB3)
+    Write-DiffRun -RunId $diffRunB -Titles @('KB1', 'KB2', 'KB4') -Folder $DiffFolder
+    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $DiffFolder -logFilePath $LogFile
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        # 4 total rows: KB1, KB2, KB3 (uninstalled), KB4 (new)
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.InstalledUpdates WHERE ComputerName = 'DIFF-01'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 4) -Message "Differential: 4 rows after Run B (3 + new KB4)"
+
+        # KB3 marked uninstalled
+        $cmd.CommandText = "SELECT UninstalledAt FROM dbo.InstalledUpdates WHERE ComputerName = 'DIFF-01' AND Title = 'KB3'"
+        $kb3Uninstall = $cmd.ExecuteScalar()
+        Assert-True -Condition ($null -ne $kb3Uninstall -and $kb3Uninstall -ne [DBNull]::Value) -Message "Differential: KB3 has UninstalledAt set after Run B"
+
+        # KB1 still active, LastSeenRunId updated to Run B
+        $cmd.CommandText = "SELECT LastSeenRunId, FirstSeenRunId, UninstalledAt FROM dbo.InstalledUpdates WHERE ComputerName = 'DIFF-01' AND Title = 'KB1'"
+        $reader = $cmd.ExecuteReader()
+        $kb1LastRun = $null; $kb1FirstRun = $null; $kb1Uninstall = $null
+        if ($reader.Read()) {
+            $kb1LastRun  = $reader['LastSeenRunId']
+            $kb1FirstRun = $reader['FirstSeenRunId']
+            $kb1Uninstall = $reader['UninstalledAt']
+        }
+        $reader.Close()
+        Assert-True -Condition ($kb1LastRun.ToString() -eq $diffRunB) -Message "Differential: KB1 LastSeenRunId = Run B"
+        Assert-True -Condition ($kb1FirstRun.ToString() -eq $diffRunA) -Message "Differential: KB1 FirstSeenRunId = Run A (unchanged)"
+        Assert-True -Condition ($kb1Uninstall -eq [DBNull]::Value) -Message "Differential: KB1 UninstalledAt remains NULL"
+
+        # KB4 brand new: FirstSeenRunId = LastSeenRunId = Run B
+        $cmd.CommandText = "SELECT FirstSeenRunId, LastSeenRunId FROM dbo.InstalledUpdates WHERE ComputerName = 'DIFF-01' AND Title = 'KB4'"
+        $reader = $cmd.ExecuteReader()
+        $kb4First = $null; $kb4Last = $null
+        if ($reader.Read()) {
+            $kb4First = $reader['FirstSeenRunId']
+            $kb4Last  = $reader['LastSeenRunId']
+        }
+        $reader.Close()
+        Assert-True -Condition ($kb4First.ToString() -eq $diffRunB -and $kb4Last.ToString() -eq $diffRunB) `
+            -Message "Differential: KB4 FirstSeenRunId = LastSeenRunId = Run B (newly inserted)"
+
+        # vCurrentInstalledUpdates excludes the uninstalled KB3
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.vCurrentInstalledUpdates WHERE ComputerName = 'DIFF-01'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 3) -Message "Differential: vCurrentInstalledUpdates shows 3 active rows (excludes KB3)"
+    } finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: differential model test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
 Write-Host "`n=== Cleanup ===" -ForegroundColor Cyan
 # ============================================================
 
@@ -592,6 +884,8 @@ if (Test-Path $TrimmedDataPath) { Remove-Item $TrimmedDataPath -Recurse -Force }
 if (Test-Path $InjectionFolder) { Remove-Item $InjectionFolder -Recurse -Force }
 if (Test-Path $SchemaFolder)    { Remove-Item $SchemaFolder    -Recurse -Force }
 if (Test-Path $Phase2Folder)    { Remove-Item $Phase2Folder    -Recurse -Force }
+if (Test-Path $Phase3Folder)    { Remove-Item $Phase3Folder    -Recurse -Force }
+if (Test-Path $DiffFolder)      { Remove-Item $DiffFolder      -Recurse -Force }
 if (Test-Path $LogFile) { Remove-Item $LogFile -Force }
 
 # ============================================================

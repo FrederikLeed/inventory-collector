@@ -110,6 +110,105 @@ VALUES
     }
 }
 
+# Schema V2 Phase 3: load InstalledUpdates as a differential set per
+# (ComputerName, Title). Each row is MERGEd - existing pairs get their
+# LastSeenRunId / LastSeenAt refreshed (and UninstalledAt cleared if they
+# had been marked uninstalled); new pairs INSERT with First = Last = @RunId.
+# After the per-row pass, any (Computer, Title) we previously had but
+# didn't see in this run gets UninstalledAt set.
+function Import-InstalledUpdatesDifferential {
+    param([Parameter(Mandatory)]$JsonContent)
+
+    if (-not $JsonContent) { return }
+    if (-not ($JsonContent -is [System.Array])) { $JsonContent = @($JsonContent) }
+
+    # Group by (ComputerName, RunId) - typically one RunId per Computer
+    $groups = @{}
+    foreach ($Item in $JsonContent) {
+        if (-not $Item -or -not $Item.ComputerName -or -not $Item.RunId) { continue }
+        $key = "$($Item.ComputerName)|$($Item.RunId)"
+        if (-not $groups.ContainsKey($key)) {
+            $groups[$key] = @{
+                ComputerName = [string]$Item.ComputerName
+                RunId        = [string]$Item.RunId
+                Items        = New-Object System.Collections.Generic.List[object]
+            }
+        }
+        $groups[$key].Items.Add($Item)
+    }
+
+    $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
+    $SqlConnection.ConnectionString = $ConnectionString
+    try {
+        $SqlConnection.Open()
+        $SqlCommand = $SqlConnection.CreateCommand()
+
+        foreach ($group in $groups.Values) {
+            $cn = $group.ComputerName
+            $runIdGuid = [Guid]::Parse($group.RunId)
+
+            foreach ($Item in $group.Items) {
+                if (-not $Item.Title) { continue }
+                $SqlCommand.Parameters.Clear()
+                $SqlCommand.CommandText = @"
+MERGE dbo.InstalledUpdates AS t
+USING (SELECT @cn AS ComputerName, @title AS Title, @rid AS RunId,
+              @installedOn AS InstalledOn, @serviceId AS ServiceID) AS s
+ON (t.ComputerName = s.ComputerName AND t.Title = s.Title)
+WHEN MATCHED THEN
+    UPDATE SET LastSeenRunId = s.RunId,
+               LastSeenAt    = SYSUTCDATETIME(),
+               UninstalledAt = NULL,
+               InstalledOn   = COALESCE(t.InstalledOn, s.InstalledOn),
+               ServiceID     = COALESCE(t.ServiceID,   s.ServiceID)
+WHEN NOT MATCHED THEN
+    INSERT (ComputerName, Title, InstalledOn, ServiceID, FirstSeenRunId, LastSeenRunId)
+    VALUES (s.ComputerName, s.Title, s.InstalledOn, s.ServiceID, s.RunId, s.RunId);
+"@
+                $SqlCommand.Parameters.AddWithValue('@cn',    $cn)            | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@title', [string]$Item.Title) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@rid',   $runIdGuid)     | Out-Null
+
+                $installedOn = [DBNull]::Value
+                if ($Item.Date) {
+                    try { $installedOn = [DateTime]::Parse([string]$Item.Date).Date } catch { }
+                } elseif ($Item.InstalledOn) {
+                    try { $installedOn = [DateTime]::Parse([string]$Item.InstalledOn).Date } catch { }
+                }
+                $SqlCommand.Parameters.AddWithValue('@installedOn', $installedOn) | Out-Null
+                $SqlCommand.Parameters.AddWithValue('@serviceId',
+                    $(if ($Item.ServiceID) { [string]$Item.ServiceID } else { [DBNull]::Value })) | Out-Null
+
+                try {
+                    $SqlCommand.ExecuteNonQuery() | Out-Null
+                } catch {
+                    $script:hasErrors = $true
+                    "Error MERGE InstalledUpdates ($cn / $($Item.Title)): $($_.Exception.Message)" |
+                        Out-File -FilePath $logFilePath -Append
+                }
+            }
+
+            # Sweep: anything for this Computer not touched by this RunId is gone
+            $SqlCommand.Parameters.Clear()
+            $SqlCommand.CommandText = @"
+UPDATE dbo.InstalledUpdates
+SET    UninstalledAt = SYSUTCDATETIME()
+WHERE  ComputerName    = @cn
+   AND LastSeenRunId  <> @rid
+   AND UninstalledAt  IS NULL
+"@
+            $SqlCommand.Parameters.AddWithValue('@cn',  $cn)        | Out-Null
+            $SqlCommand.Parameters.AddWithValue('@rid', $runIdGuid) | Out-Null
+            $SqlCommand.ExecuteNonQuery() | Out-Null
+        }
+
+        Write-Host "InstalledUpdates differential: $($groups.Count) (Computer, RunId) group(s)"
+    }
+    finally {
+        $SqlConnection.Dispose()
+    }
+}
+
 function Update-SqlTableFromJson {
     param (
         [string]$JsonFilePath
@@ -121,67 +220,50 @@ function Update-SqlTableFromJson {
 
         Test-SqlIdentifier -Name $TableName -Context "table name"
 
+        # Schema V2 Phase 3: InstalledUpdates uses the differential model.
+        if ($TableName -eq 'InstalledUpdates') {
+            Import-InstalledUpdatesDifferential -JsonContent $JsonContent
+            return
+        }
+
         $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
         $SqlConnection.ConnectionString = $ConnectionString
         try {
             $SqlConnection.Open()
-
-            # Create SQL command
             $SqlCommand = $SqlConnection.CreateCommand()
+
+            # Natural key for idempotent append-only inserts: always (RunId, ...)
+            # so re-running the same RunId is a no-op via NOT EXISTS, but a new
+            # RunId for the same logical row creates a new snapshot.
+            $NaturalKey = if ($KeyColumnsMap.ContainsKey($TableName)) {
+                @('RunId') + $KeyColumnsMap[$TableName]
+            } else {
+                @('RunId', 'ComputerName')
+            }
 
             foreach ($Item in $JsonContent) {
                 $SqlCommand.Parameters.Clear()
 
-                # Determine key columns for this table
-                if ($KeyColumnsMap.ContainsKey($TableName)) {
-                    $KeyColumns = $KeyColumnsMap[$TableName]
-                } else {
-                    $KeyColumns = @("ComputerName")
-                }
+                # Build WHERE for the NOT EXISTS guard, then INSERT VALUES.
+                $Condition = Add-ParameterizedCondition -SqlCommand $SqlCommand -Item $Item -KeyColumns $NaturalKey -Prefix 'k'
+                $paramInfo = Add-ParameterizedValues   -SqlCommand $SqlCommand -Item $Item -Prefix 'p'
 
-                # Build parameterized WHERE condition for existence check
-                $Condition = Add-ParameterizedCondition -SqlCommand $SqlCommand -Item $Item -KeyColumns $KeyColumns -Prefix "k"
-
-                # Check if the record exists
-                $SqlCommand.CommandText = "SELECT COUNT(*) FROM [$TableName] WHERE $Condition"
-                $RecordExists = $SqlCommand.ExecuteScalar()
-
-                if ($RecordExists -gt 0) {
-                    # Record exists: perform parameterized UPDATE
-                    $SqlCommand.Parameters.Clear()
-
-                    $SetClause = Add-ParameterizedSetClause -SqlCommand $SqlCommand -Item $Item -Prefix "s"
-                    $Condition = Add-ParameterizedCondition -SqlCommand $SqlCommand -Item $Item -KeyColumns $KeyColumns -Prefix "k"
-
-                    $SqlCommand.CommandText = "UPDATE [$TableName] SET $SetClause WHERE $Condition"
-                    try {
-                        $SqlCommand.ExecuteNonQuery() | Out-Null
-                    } catch {
-                        $script:hasErrors = $true
-                        $errorMessage = "Error updating table $TableName : $($_.Exception.Message)"
-                        $errorMessage | Out-File -FilePath $logFilePath -Append
-                    }
-
-                } else {
-                    # No record exists: perform parameterized INSERT
-                    $SqlCommand.Parameters.Clear()
-
-                    $paramInfo = Add-ParameterizedValues -SqlCommand $SqlCommand -Item $Item -Prefix "p"
-
-                    $SqlCommand.CommandText = "INSERT INTO [$TableName] ($($paramInfo.Columns)) VALUES ($($paramInfo.Placeholders))"
-                    try {
-                        $SqlCommand.ExecuteNonQuery() | Out-Null
-                    } catch {
-                        $script:hasErrors = $true
-                        $errorMessage = "Error inserting into table $TableName : $($_.Exception.Message)"
-                        $errorMessage | Out-File -FilePath $logFilePath -Append
-                    }
+                $SqlCommand.CommandText = @"
+INSERT INTO [$TableName] ($($paramInfo.Columns))
+SELECT $($paramInfo.Placeholders)
+WHERE NOT EXISTS (SELECT 1 FROM [$TableName] WHERE $Condition);
+"@
+                try {
+                    $SqlCommand.ExecuteNonQuery() | Out-Null
+                } catch {
+                    $script:hasErrors = $true
+                    $errorMessage = "Error inserting into table $TableName : $($_.Exception.Message)"
+                    $errorMessage | Out-File -FilePath $logFilePath -Append
                 }
             }
 
-            # Customized output message
             $ComputerName = $JsonContent.ComputerName | Select-Object -Unique
-            Write-Host "Table $TableName updated for $ComputerName"
+            Write-Host "Table ${TableName}: appended snapshot for $ComputerName"
         }
         finally {
             $SqlConnection.Dispose()
