@@ -66,7 +66,15 @@ What it does:
 5. Re-runs the update and asserts no duplicates (UPDATE path works)
 6. Inserts an SQL injection payload through a parameterized command and
    asserts the table survives + value is stored as a literal string
-7. Drops the database and prints a pass/fail summary
+7. Drives a JSON injection payload through the actual Update script
+   and verifies the row landed as literal data
+8. Exercises the schema-evolution branch: adds a column to a JSON,
+   re-runs Create, verifies `ALTER TABLE` happened
+9. Applies `docs/migrations/V2_Phase1.sql` against the populated DB
+   and asserts the infrastructure tables (`Computers`, `CollectionRuns`)
+   were created and backfilled correctly, `RunId` / `CreatedAt` were
+   added to every fact table, and a second run is a no-op
+10. Drops the database and prints a pass/fail summary
 
 Exit code is 0 on green, 1 if any assertion failed.
 

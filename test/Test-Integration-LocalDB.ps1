@@ -367,6 +367,109 @@ try {
 }
 
 # ============================================================
+Write-Host "`n=== Test 7: V2 Phase 1 migration ===" -ForegroundColor Cyan
+# ============================================================
+# Runs docs/migrations/V2_Phase1.sql against the DB that Tests 1-6 populated.
+# Asserts: Computers + CollectionRuns infrastructure tables come up populated,
+# every existing fact table gains RunId / CreatedAt with values backfilled from
+# UpdateTimeStamp, and a second run is a no-op (idempotent).
+
+$migrationPath = Join-Path -Path (Split-Path $PSScriptRoot -Parent) -ChildPath 'docs\migrations\V2_Phase1.sql'
+
+try {
+    Assert-True -Condition (Test-Path $migrationPath) -Message "Migration script exists: $migrationPath"
+
+    $migrationSql = Get-Content -Path $migrationPath -Raw
+
+    # First run: actual migration
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandTimeout = 300
+        $cmd.CommandText = $migrationSql
+        $cmd.ExecuteNonQuery() | Out-Null
+
+        # Computers populated from DISTINCT ComputerName across all fact tables
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers"
+        $computersCount = $cmd.ExecuteScalar()
+        Assert-True -Condition ($computersCount -gt 0) -Message "Computers populated ($computersCount rows)"
+
+        # CollectionRuns: one synthetic row per Computer
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns"
+        $runsCount = $cmd.ExecuteScalar()
+        Assert-True -Condition ($runsCount -eq $computersCount) `
+            -Message "CollectionRuns has one synthetic run per Computer ($runsCount = $computersCount)"
+
+        # Every Computer has LastRunId pointing at a real run
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers WHERE LastRunId IS NULL"
+        $nullRunIds = $cmd.ExecuteScalar()
+        Assert-True -Condition ($nullRunIds -eq 0) -Message "All Computers have LastRunId populated ($nullRunIds NULL)"
+
+        # Every Computer's LastRunId resolves to an actual CollectionRuns row
+        $cmd.CommandText = @"
+SELECT COUNT(*) FROM dbo.Computers c
+LEFT JOIN dbo.CollectionRuns r ON r.RunId = c.LastRunId
+WHERE r.RunId IS NULL
+"@
+        $orphanRunIds = $cmd.ExecuteScalar()
+        Assert-True -Condition ($orphanRunIds -eq 0) -Message "All LastRunId values resolve to CollectionRuns ($orphanRunIds orphan)"
+
+        # A representative fact table has RunId/CreatedAt populated, none NULL
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.InstalledSoftware WHERE RunId IS NULL OR CreatedAt IS NULL"
+        $missingFacts = $cmd.ExecuteScalar()
+        Assert-True -Condition ($missingFacts -eq 0) -Message "InstalledSoftware: every row has RunId + CreatedAt ($missingFacts missing)"
+
+        # CreatedAt should be backfilled from UpdateTimeStamp, not "now" - within 1 day of UpdateTimeStamp
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.InstalledSoftware WHERE ABS(DATEDIFF(SECOND, CAST(UpdateTimeStamp AS DATETIME2(3)), CreatedAt)) > 5"
+        $mismatchedTimestamps = $cmd.ExecuteScalar()
+        Assert-True -Condition ($mismatchedTimestamps -eq 0) -Message "InstalledSoftware.CreatedAt matches UpdateTimeStamp ($mismatchedTimestamps mismatched)"
+
+        # ComputerName widened to NVARCHAR(128) on InstalledSoftware
+        $cmd.CommandText = @"
+SELECT max_length FROM sys.columns
+WHERE object_id = OBJECT_ID('dbo.InstalledSoftware') AND name = 'ComputerName'
+"@
+        $colWidth = $cmd.ExecuteScalar()
+        # NVARCHAR max_length is the byte length; for NVARCHAR(128) that's 256
+        Assert-True -Condition ($colWidth -eq 256) -Message "InstalledSoftware.ComputerName widened to NVARCHAR(128) (max_length=$colWidth, expected 256)"
+    }
+    finally {
+        $conn.Dispose()
+    }
+
+    # Second run: idempotent
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers"
+        $cBefore = $cmd.ExecuteScalar()
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns"
+        $rBefore = $cmd.ExecuteScalar()
+
+        $cmd.CommandTimeout = 300
+        $cmd.CommandText = $migrationSql
+        $cmd.ExecuteNonQuery() | Out-Null
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers"
+        $cAfter = $cmd.ExecuteScalar()
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns"
+        $rAfter = $cmd.ExecuteScalar()
+
+        Assert-True -Condition ($cAfter -eq $cBefore) -Message "Migration is idempotent: Computers unchanged ($cBefore -> $cAfter)"
+        Assert-True -Condition ($rAfter -eq $rBefore) -Message "Migration is idempotent: CollectionRuns unchanged ($rBefore -> $rAfter)"
+    }
+    finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: Phase 1 migration test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
 Write-Host "`n=== Cleanup ===" -ForegroundColor Cyan
 # ============================================================
 

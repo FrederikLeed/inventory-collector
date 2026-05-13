@@ -17,6 +17,51 @@ $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=Tr
 # so the scheduler's step gating actually breaks the chain on failure.
 $script:hasErrors = $false
 
+# Initialise V2 infrastructure tables (Computers + CollectionRuns) on every run.
+# Idempotent: skips when already present. Mirrors docs/migrations/V2_Phase1.sql.
+function Initialize-V2InfrastructureTables {
+    $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
+    $SqlConnection.ConnectionString = $ConnectionString
+    try {
+        $SqlConnection.Open()
+        $SqlCommand = $SqlConnection.CreateCommand()
+        $SqlCommand.CommandText = @"
+IF OBJECT_ID('dbo.Computers', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Computers (
+        ComputerName   NVARCHAR(128)    NOT NULL PRIMARY KEY,
+        FirstSeenAt    DATETIME2(3)     NOT NULL DEFAULT SYSUTCDATETIME(),
+        LastSeenAt     DATETIME2(3)     NOT NULL DEFAULT SYSUTCDATETIME(),
+        LastRunId      UNIQUEIDENTIFIER NULL,
+        IsActive       BIT              NOT NULL DEFAULT 1,
+        DeactivatedAt  DATETIME2(3)     NULL
+    );
+END
+
+IF OBJECT_ID('dbo.CollectionRuns', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.CollectionRuns (
+        RunId             UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+        ComputerName      NVARCHAR(128)    NOT NULL,
+        StartedAt         DATETIME2(3)     NOT NULL,
+        CompletedAt       DATETIME2(3)     NULL,
+        Status            NVARCHAR(20)     NOT NULL,
+        MetricsSucceeded  INT              NULL,
+        MetricsFailed     INT              NULL,
+        FailedMetrics     NVARCHAR(MAX)    NULL,
+        LoadedAt          DATETIME2(3)     NULL
+    );
+    CREATE INDEX IX_CollectionRuns_Computer_Started
+        ON dbo.CollectionRuns (ComputerName, StartedAt DESC);
+END
+"@
+        $SqlCommand.ExecuteNonQuery() | Out-Null
+    }
+    finally {
+        $SqlConnection.Dispose()
+    }
+}
+
 # Function to check if a table exists
 function Test-SqlTableExists {
     param (
@@ -87,19 +132,30 @@ function New-SqlTableFromJson {
             $ColumnName = $Property.Name
             Test-SqlIdentifier -Name $ColumnName -Context "column name"
 
-            $DataType = switch ($Property.TypeNameOfValue) {
-                "System.String" { "NVARCHAR(MAX)" }
-                "System.Int32" { "INT" }
-                "System.Boolean" { "BIT" }
-                Default { "NVARCHAR(MAX)" }
+            # Special-case ComputerName to NVARCHAR(128); it's the join column
+            # and Schema V2 standardises it. Everything else keeps the V1
+            # NVARCHAR(MAX) / INT / BIT mapping for backward compatibility.
+            if ($ColumnName -eq 'ComputerName') {
+                $DataType = "NVARCHAR(128)"
+            } else {
+                $DataType = switch ($Property.TypeNameOfValue) {
+                    "System.String" { "NVARCHAR(MAX)" }
+                    "System.Int32"  { "INT" }
+                    "System.Boolean"{ "BIT" }
+                    Default         { "NVARCHAR(MAX)" }
+                }
             }
 
             $SqlCreateTableCommand += "[$ColumnName] $DataType, "
         }
 
-        # Add the Id and UpdateTimeStamp columns
+        # V1 columns: Id PK + UpdateTimeStamp (kept for Phase 1 compatibility,
+        # dropped in Phase 3 after the pipeline emits RunId end-to-end).
+        # V2 columns: RunId + CreatedAt added by Phase 1 - NULLable for now.
         $SqlCreateTableCommand += "[Id] INT IDENTITY(1,1) PRIMARY KEY, "
-        $SqlCreateTableCommand += "[UpdateTimeStamp] DATETIME DEFAULT GETDATE())"
+        $SqlCreateTableCommand += "[UpdateTimeStamp] DATETIME DEFAULT GETDATE(), "
+        $SqlCreateTableCommand += "[RunId] UNIQUEIDENTIFIER NULL, "
+        $SqlCreateTableCommand += "[CreatedAt] DATETIME2(3) NULL)"
 
         # Create and open SQL connection
         $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
@@ -239,6 +295,9 @@ function Update-SqlTableFromJson {
         Write-Error "An error occurred while processing $TableName : $_"
     }
 }
+
+# Make sure the V2 infrastructure tables exist before processing any JSON
+Initialize-V2InfrastructureTables
 
 # Loop through each JSON file in the folder and create/update tables
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
