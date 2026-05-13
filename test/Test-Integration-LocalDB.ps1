@@ -1,7 +1,11 @@
 # Test-Integration-LocalDB.ps1
 # End-to-end integration test using SQL Server LocalDB
 # Tests CreateSQLTableFromJSON.ps1 and UpdateSQLTableFromJSON_new.ps1 with real sample data
-# Uses first 20 rows per JSON file to keep test fast
+# Uses first 1000 rows per JSON file to keep test fast
+
+param(
+    [string]$SampleDataPath = (Join-Path -Path $PSScriptRoot -ChildPath "sample-data\InventoryParsed")
+)
 
 $ErrorActionPreference = "Stop"
 $script:TestsPassed = 0
@@ -20,7 +24,6 @@ function Assert-True {
 
 $SqlServer = "(localdb)\MSSQLLocalDB"
 $Database = "InventoryTest"
-$SampleDataPath = Join-Path -Path $PSScriptRoot -ChildPath "sample-data\InventoryParsed"
 $TrimmedDataPath = Join-Path -Path $PSScriptRoot -ChildPath "sample-data\Trimmed"
 $LogFile = Join-Path -Path $PSScriptRoot -ChildPath "integration-test.log"
 $ScriptRoot = Split-Path -Path $PSScriptRoot -Parent
