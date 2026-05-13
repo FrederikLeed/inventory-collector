@@ -63,6 +63,27 @@ GROUP BY CAST(StartedAt AS DATE)
 ORDER BY day;
 ```
 
+## Quick-load: skip the converter
+
+`test/sample-data/InventoryZips.zip` is a pre-built bundle of 1059 anonymized
+per-server zips already in the V2 GetInventory layout (RunIds stamped,
+`_collection-meta.json` sidecars, inner metric zips). Unpack it once and
+feed the result straight into ParseInventory — no `Build-V2Zips.ps1` step,
+saves a few minutes per refresh:
+
+```powershell
+Expand-Archive .\test\sample-data\InventoryZips.zip -DestinationPath C:\temp\inv-share -Force
+.\ParseInventory.ps1 -fileSharePath C:\temp\inv-share `
+                     -extractPath   C:\temp\inv-extract `
+                     -aggregateOutputPath C:\temp\inv-agg
+.\CreateSQLTableFromJSON.ps1   -SqlServer '(localdb)\MSSQLLocalDB' -Database InventoryTest -JsonFilesPath C:\temp\inv-agg
+.\UpdateSQLTableFromJSON_new.ps1 -SqlServer '(localdb)\MSSQLLocalDB' -Database InventoryTest -JsonFilesPath C:\temp\inv-agg -logFilePath C:\temp\inv-load.log
+```
+
+RunIds in the bundle are fixed, so re-running the load is idempotent. For
+multi-day history, use `Demo-History.ps1` instead — it re-runs
+`Build-V2Zips.ps1` each round to mint fresh RunIds.
+
 ## Demoing history
 
 To populate the DB with N days of synthetic collection history (useful for testing time-series visuals and retention behavior):

@@ -2,5 +2,6 @@
 parsetrans.log
 test/sample-data/*
 !test/sample-data/InventoryParsed.zip
+!test/sample-data/InventoryZips.zip
 test/SqlLocalDB.msi
 test/*.log
