@@ -6,7 +6,6 @@
 
 ## Medium Priority
 
-- [ ] Connection strings in config.xml are plain text — consider Windows credential store
 - [ ] UserProfileList: Get-ChildItem -Recurse for profile size is very slow — consider using robocopy /L or WMI Win32_Directory
 - [ ] gpresult /r in Get-SystemInfo can hang — add timeout with Start-Job
 - [ ] ParseInventory.ps1 / ParseTranscripts.ps1: review for similar issues
