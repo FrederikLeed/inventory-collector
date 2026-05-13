@@ -149,28 +149,23 @@ try {
             Assert-True -Condition ($count -gt 0) -Message "$table has $count rows"
         }
 
-        # Verify a known value with special characters survives round-trip
+        # Verify special characters survive round-trip - take ANY ShareAccessInfo
+        # row whose SharePath contains a backslash. The previous version targeted
+        # a hard-coded computer name and silently skipped when the fixture had a
+        # different anonymized identifier.
         $cmd.Parameters.Clear()
-        $cmd.CommandText = "SELECT [SharePath] FROM [ShareAccessInfo] WHERE [ComputerName] = @cn"
-        $cmd.Parameters.AddWithValue("@cn", "AAKRA") | Out-Null
-        $reader = $cmd.ExecuteReader()
-        $paths = @()
-        while ($reader.Read()) { $paths += $reader["SharePath"] }
-        $reader.Close()
+        $cmd.CommandText = "SELECT TOP 1 [SharePath] FROM [ShareAccessInfo] WHERE [SharePath] LIKE '%\%'"
+        $path = $cmd.ExecuteScalar()
+        Assert-True -Condition ($null -ne $path -and $path -is [string] -and $path -match '\\') `
+            -Message "ShareAccessInfo has at least one row whose SharePath contains a backslash: $path"
 
-        if ($paths.Count -gt 0) {
-            Assert-True -Condition ($paths[0] -match '\\') -Message "ShareAccessInfo preserves backslashes in paths: $($paths[0])"
-        }
-
-        # Verify nested array was serialized (GroupMembers.Members)
+        # Verify GroupMembers.Members serializes to a non-empty string for at
+        # least one row. Doesn't depend on a specific group name.
         $cmd.Parameters.Clear()
-        $cmd.CommandText = "SELECT TOP 1 [Members] FROM [GroupMembers] WHERE [GroupName] = @gn"
-        $cmd.Parameters.AddWithValue("@gn", "Administrators") | Out-Null
+        $cmd.CommandText = "SELECT TOP 1 [Members] FROM [GroupMembers] WHERE [Members] IS NOT NULL AND LEN([Members]) > 0"
         $value = $cmd.ExecuteScalar()
-        if ($null -ne $value -and $value -ne [DBNull]::Value) {
-            $isJsonOrString = ($value -is [string])
-            Assert-True -Condition $isJsonOrString -Message "GroupMembers.Members stored as string (length: $($value.Length))"
-        }
+        Assert-True -Condition ($null -ne $value -and $value -ne [DBNull]::Value -and $value -is [string] -and $value.Length -gt 0) `
+            -Message "GroupMembers.Members stored as non-empty string for at least one row (length: $(if ($value -is [string]) { $value.Length } else { 'n/a' }))"
     }
     finally {
         $conn.Dispose()
@@ -260,6 +255,118 @@ try {
 }
 
 # ============================================================
+Write-Host "`n=== Test 5: SQL injection via the actual Update script ===" -ForegroundColor Cyan
+# ============================================================
+# Test 4 proved that AddWithValue is injection-safe. Test 5 proves that the
+# REAL production path through Add-ParameterizedValues + the Update script
+# is also safe - so a future regression that bypasses the helpers gets caught.
+
+$InjectionFolder = Join-Path -Path $PSScriptRoot -ChildPath "sample-data\InjectionTest"
+if (Test-Path $InjectionFolder) { Remove-Item $InjectionFolder -Recurse -Force }
+New-Item -ItemType Directory -Path $InjectionFolder -Force | Out-Null
+
+$payload = "O'Brien'; DROP TABLE InjectionE2E;--"
+@(
+    [PSCustomObject]@{ ComputerName = "INJECT-01"; Note = $payload }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $InjectionFolder "InjectionE2E.json") -Encoding UTF8
+
+try {
+    & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $InjectionFolder
+    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $InjectionFolder -logFilePath $LogFile
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+
+        $cmd.CommandText = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'InjectionE2E'"
+        $exists = $cmd.ExecuteScalar()
+        Assert-True -Condition ($exists -gt 0) -Message "InjectionE2E table still exists after script ran with injection payload"
+
+        $cmd.CommandText = "SELECT [Note] FROM [InjectionE2E] WHERE [ComputerName] = @cn"
+        $cmd.Parameters.AddWithValue("@cn", "INJECT-01") | Out-Null
+        $storedValue = $cmd.ExecuteScalar()
+        Assert-True -Condition ($storedValue -eq $payload) `
+            -Message "Update script stored injection payload as literal string: '$storedValue'"
+    }
+    finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: e2e injection test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
+Write-Host "`n=== Test 6: Schema evolution (ALTER TABLE branch) ===" -ForegroundColor Cyan
+# ============================================================
+# Run CreateSQLTableFromJSON twice against the same table name but with the
+# second JSON containing an extra property. The script's "table exists - add
+# missing columns" branch should ALTER TABLE rather than CREATE TABLE.
+
+$SchemaFolder = Join-Path -Path $PSScriptRoot -ChildPath "sample-data\SchemaEvolutionTest"
+if (Test-Path $SchemaFolder) { Remove-Item $SchemaFolder -Recurse -Force }
+New-Item -ItemType Directory -Path $SchemaFolder -Force | Out-Null
+
+# Initial schema: 2 columns
+@(
+    [PSCustomObject]@{ ComputerName = "SCHEMA-01"; OriginalCol = "v1" }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $SchemaFolder "SchemaEvolution.json") -Encoding UTF8
+
+try {
+    & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $SchemaFolder
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SchemaEvolution'"
+        $reader = $cmd.ExecuteReader()
+        $initialColumns = @()
+        while ($reader.Read()) { $initialColumns += $reader["COLUMN_NAME"] }
+        $reader.Close()
+        Assert-True -Condition ($initialColumns -contains "ComputerName") -Message "Initial create: ComputerName column present"
+        Assert-True -Condition ($initialColumns -contains "OriginalCol") -Message "Initial create: OriginalCol present"
+        Assert-True -Condition ($initialColumns -notcontains "AddedCol") -Message "Initial create: AddedCol absent (sanity check)"
+    } finally {
+        $conn.Dispose()
+    }
+
+    # Rewrite JSON with one extra column
+    @(
+        [PSCustomObject]@{ ComputerName = "SCHEMA-02"; OriginalCol = "v2"; AddedCol = "new!" }
+    ) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $SchemaFolder "SchemaEvolution.json") -Encoding UTF8
+
+    & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $SchemaFolder
+
+    $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
+    try {
+        $conn.Open()
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SchemaEvolution'"
+        $reader = $cmd.ExecuteReader()
+        $finalColumns = @()
+        while ($reader.Read()) { $finalColumns += $reader["COLUMN_NAME"] }
+        $reader.Close()
+        Assert-True -Condition ($finalColumns -contains "OriginalCol") -Message "Schema evolution: OriginalCol still present"
+        Assert-True -Condition ($finalColumns -contains "AddedCol") -Message "Schema evolution: AddedCol added via ALTER TABLE"
+
+        # Verify Update script can insert into the evolved schema
+        & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $SchemaFolder -logFilePath $LogFile
+
+        $cmd.CommandText = "SELECT [AddedCol] FROM [SchemaEvolution] WHERE [ComputerName] = @cn"
+        $cmd.Parameters.AddWithValue("@cn", "SCHEMA-02") | Out-Null
+        $addedVal = $cmd.ExecuteScalar()
+        Assert-True -Condition ($addedVal -eq "new!") -Message "Update populated AddedCol on the evolved schema: '$addedVal'"
+    } finally {
+        $conn.Dispose()
+    }
+} catch {
+    Write-Host "  FAIL: schema evolution test threw: $_" -ForegroundColor Red
+    $script:TestsFailed++
+}
+
+# ============================================================
 Write-Host "`n=== Cleanup ===" -ForegroundColor Cyan
 # ============================================================
 
@@ -277,6 +384,8 @@ finally {
 
 # Clean up temp files
 if (Test-Path $TrimmedDataPath) { Remove-Item $TrimmedDataPath -Recurse -Force }
+if (Test-Path $InjectionFolder) { Remove-Item $InjectionFolder -Recurse -Force }
+if (Test-Path $SchemaFolder) { Remove-Item $SchemaFolder -Recurse -Force }
 if (Test-Path $LogFile) { Remove-Item $LogFile -Force }
 
 # ============================================================

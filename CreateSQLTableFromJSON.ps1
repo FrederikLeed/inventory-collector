@@ -13,6 +13,10 @@ Param(
 # Define SQL Server connection details
 $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
 
+# Script-scoped error flag - any catch below sets this; final exit code uses it
+# so the scheduler's step gating actually breaks the chain on failure.
+$script:hasErrors = $false
+
 # Function to check if a table exists
 function Test-SqlTableExists {
     param (
@@ -66,7 +70,7 @@ function Get-SqlTableSchema {
 }
 
 # Function to create a SQL table from a JSON schema
-function Create-SqlTableFromJson {
+function New-SqlTableFromJson {
     param (
         [string]$TableName,
         [PSCustomObject]$FirstJsonItem
@@ -115,6 +119,7 @@ function Create-SqlTableFromJson {
         }
     }
     catch {
+        $script:hasErrors = $true
         Write-Error "An error occurred while creating $TableName : $_"
     }
 }
@@ -149,6 +154,7 @@ function Add-SqlColumn {
         }
     }
     catch {
+        $script:hasErrors = $true
         Write-Error "An error occurred while adding column $ColumnName to $TableName : $_"
     }
 }
@@ -182,6 +188,7 @@ function Remove-SqlColumn {
         }
     }
     catch {
+        $script:hasErrors = $true
         Write-Error "An error occurred while removing column $ColumnName from $TableName : $_"
     }
 }
@@ -199,7 +206,7 @@ function Update-SqlTableFromJson {
 
         if (-not (Test-SqlTableExists -TableName $TableName)) {
             Write-Host "Creating new table: $TableName"
-            Create-SqlTableFromJson -TableName $TableName -FirstJsonItem $FirstJsonItem
+            New-SqlTableFromJson -TableName $TableName -FirstJsonItem $FirstJsonItem
         } else {
             Write-Host "Updating existing table: $TableName"
             $CurrentSchema = Get-SqlTableSchema -TableName $TableName
@@ -228,6 +235,7 @@ function Update-SqlTableFromJson {
         }
     }
     catch {
+        $script:hasErrors = $true
         Write-Error "An error occurred while processing $TableName : $_"
     }
 }
@@ -236,3 +244,5 @@ function Update-SqlTableFromJson {
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
+
+if ($script:hasErrors) { exit 1 } else { exit 0 }

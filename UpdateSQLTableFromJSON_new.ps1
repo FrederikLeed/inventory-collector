@@ -16,6 +16,11 @@ Param(
 
 $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
 
+# Script-scoped error flag - any per-record or outer catch below sets this;
+# final exit code uses it so the scheduler's step gating actually breaks the
+# chain on failure instead of always returning success.
+$script:hasErrors = $false
+
 # Define a dictionary mapping table names to key columns
 $KeyColumnsMap = @{
     "PersonalCertificates" = @("ComputerName", "Thumbprint")
@@ -78,6 +83,7 @@ function Update-SqlTableFromJson {
                     try {
                         $SqlCommand.ExecuteNonQuery() | Out-Null
                     } catch {
+                        $script:hasErrors = $true
                         $errorMessage = "Error updating table $TableName : $($_.Exception.Message)"
                         $errorMessage | Out-File -FilePath $logFilePath -Append
                     }
@@ -92,6 +98,7 @@ function Update-SqlTableFromJson {
                     try {
                         $SqlCommand.ExecuteNonQuery() | Out-Null
                     } catch {
+                        $script:hasErrors = $true
                         $errorMessage = "Error inserting into table $TableName : $($_.Exception.Message)"
                         $errorMessage | Out-File -FilePath $logFilePath -Append
                     }
@@ -108,6 +115,7 @@ function Update-SqlTableFromJson {
 
     }
     catch {
+        $script:hasErrors = $true
         Write-Error "An error occurred: $_"
     }
 }
@@ -119,4 +127,4 @@ Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | ForEach-Object {
     Update-SqlTableFromJson -JsonFilePath $_.FullName
 }
 
-exit 0
+if ($script:hasErrors) { exit 1 } else { exit 0 }

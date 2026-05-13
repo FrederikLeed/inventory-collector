@@ -2,7 +2,6 @@
 
 ![image](https://github.com/user-attachments/assets/8e220b79-dee2-4c43-aa21-6cdaf28f54aa)
 
-
 This PowerShell script is crafted to remotely collect a wide array of system and software-related information from one or multiple computers. It compiles this data into an inventory report in JSON format and facilitates its transfer to a centralized fileshare location for thorough analysis.
 
 ## Features
@@ -79,7 +78,7 @@ Import the sample GPO provided in this repository, "Device - Deploy Inventory Co
 
 ### 2. Defender For Endpoint Live Response Integration
 
-The script is compatible with Defender For Endpoint Live Response. Ensure Live Response is set up (See Documentation). 
+The script is compatible with Defender For Endpoint Live Response. Ensure Live Response is set up (See Documentation).
 
 Refer to the blog article for more on using Custom Script in Live Response: [Incident Response Part 3: Leveraging Live Response](https://kqlquery.com/posts/leveraging-live-response/).
 
@@ -109,17 +108,17 @@ Deploy using software like ConfigMGR or other deployment tools.
 
 - **Dynamic Parsing**: Handles JSON files in zip archives, eliminating the need for predefined metrics.
 - **Flexible Aggregation**: Aggregates data based on dynamically determined metric names from folder names.
-- **Error Handling**: Includes robust error handling mechanisms.
+- **Error Handling**: Per-step try/catch with `$script:hasErrors` tracking; exits non-zero on any extraction, parse, or cleanup failure so the scheduler chain stops on real failures instead of silently continuing.
 
 ### Execution Instructions
 
-1. **Set Parameters**:
+1. **Set Parameters** (all mandatory):
     - `$fileSharePath`: Path to the fileshare with zip files.
     - `$extractPath`: Temporary path for extracting zip contents.
     - `$aggregateOutputPath`: Path for saving aggregated JSON files.
 
 2. **Run the Script**:
-   Execute in PowerShell. It processes each zip file, extracting contents and aggregating data into separate JSON files.
+   Execute in PowerShell. It processes each zip file, extracting contents and aggregating data into separate JSON files. A `Summary:` line at the end of stdout reports counts of zips/JSON files processed vs failed.
 
 3. **Check Results**:
    Inspect the `$aggregateOutputPath` for aggregated JSON files.
@@ -127,3 +126,26 @@ Deploy using software like ConfigMGR or other deployment tools.
 ### Output
 
 Outputs aggregated JSON files named after each metric (e.g., `SystemInfo.json`), containing combined data from all processed servers for that metric.
+
+## Load Into SQL Server
+
+`CreateSQLTableFromJSON.ps1` creates (or evolves) a table per aggregated JSON file. `UpdateSQLTableFromJSON_new.ps1` performs idempotent upserts using a per-table key column map (`KeyColumnsMap`) so re-running the same data updates existing rows instead of duplicating them. Both scripts use parameterized `SqlCommand.Parameters` via the shared `SqlHelpers.ps1` module — no value is ever string-concatenated into the SQL text. Table and column names go through `Test-SqlIdentifier` which rejects anything outside `[A-Za-z0-9_ ]`.
+
+The legacy `UpdateSQLTableFromJSON.ps1` (still in `legacy/`) and the Azure variants `*_azure.ps1` still use string-concatenated queries; only `UpdateSQLTableFromJSON_new.ps1` is wired into the production scheduler chain (`config.xml`). The Azure scripts are deferred for a full rewrite under Managed Identity auth — tracked in `TODO.md`.
+
+Both SQL scripts exit non-zero if any record fails to apply, so `scheduler.ps1`'s step gating actually stops the chain on failure rather than continuing with partial data.
+
+## Testing
+
+The `test/` folder contains LocalDB-based unit + integration tests plus an anonymized customer dataset. See [test/TESTING.md](test/TESTING.md) for the full setup, but the short version:
+
+```powershell
+# One-time setup
+.\test\Download-SqlLocalDB.ps1 -Install
+Expand-Archive .\test\sample-data\InventoryParsed.zip .\test\sample-data\InventoryParsed
+
+# Run everything
+.\test\Run-AllTests.ps1
+```
+
+The integration test exercises the full create + update path against a real LocalDB instance and asserts SQL injection payloads are stored as literal data, schema evolution works (ALTER TABLE branch), and re-runs don't duplicate rows.
