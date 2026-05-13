@@ -9,85 +9,92 @@ Param(
 
 $nestedExtractPath = Join-Path -Path $extractPath -ChildPath "Nested"
 
-# Create directories and suppress the output
 New-Item -Path $extractPath, $nestedExtractPath, $aggregateOutputPath -ItemType Directory -Force | Out-Null
 
-# Initialize data storage
-$aggregatedData = @{}
-$hasErrors = $false
+# Script-scoped so writes from inside ForEach-Object script blocks propagate.
+$script:aggregatedData = @{}
+$script:hasErrors      = $false
+$script:zipsProcessed  = 0
+$script:zipsFailed     = 0
+$script:jsonProcessed  = 0
+$script:jsonFailed     = 0
 
-# Function to log messages to a file
-function Write-Log {
-    param(
-        [string]$Message
-    )
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    #"$timestamp - $Message" | Out-File -FilePath $logFilePath -Append
-}
-
-# Process each zip file
 Get-ChildItem -Path $fileSharePath -Filter "*.zip" | ForEach-Object {
-
     $zipFile = $_.FullName
-    # Check if the zip file exists
-    if(-not($zipFile)){
-        $hasErrors = $true
-    }
 
-    Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+    try {
+        Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force -ErrorAction Stop
+    } catch {
+        Write-Host "Error extracting outer zip $zipFile : $_"
+        $script:hasErrors = $true
+        $script:zipsFailed++
+        return
+    }
 
     Get-ChildItem -Path $extractPath -Filter "*.zip" | ForEach-Object {
         $nestedZipFile = $_.FullName
-        Expand-Archive -Path $nestedZipFile -DestinationPath $nestedExtractPath -Force
 
-        # Process all JSON files in the nested directory
+        try {
+            Expand-Archive -Path $nestedZipFile -DestinationPath $nestedExtractPath -Force -ErrorAction Stop
+        } catch {
+            Write-Host "Error extracting nested zip $nestedZipFile : $_"
+            $script:hasErrors = $true
+            return
+        }
+
         Get-ChildItem -Path $nestedExtractPath -Filter "*.json" -Recurse | ForEach-Object {
             $jsonFilePath = $_.FullName
-            $metricName = Split-Path -Path $_.Directory -Leaf
+            $metricName   = Split-Path -Path $_.Directory -Leaf
 
             try {
                 $jsonData = Get-Content -Path $jsonFilePath | ConvertFrom-Json
                 if ($jsonData) {
-                    # Aggregate data based on metric name
-                    if (-not $aggregatedData.ContainsKey($metricName)) {
-                        $aggregatedData[$metricName] = @()
+                    if (-not $script:aggregatedData.ContainsKey($metricName)) {
+                        $script:aggregatedData[$metricName] = @()
                     }
-                    $aggregatedData[$metricName] += $jsonData
+                    $script:aggregatedData[$metricName] += $jsonData
+                    $script:jsonProcessed++
                 } else {
                     Write-Host "No data found in file: $jsonFilePath"
-                    # Log the occurrence of no data found
-                    Write-Log -Message "No data found in file: $jsonFilePath"
                 }
             } catch {
                 Write-Host "Error reading JSON from $jsonFilePath : $_"
-                # Log the error
-                Write-Log -Message "Error reading JSON from $jsonFilePath : $_"
-                $hasErrors = $true
+                $script:hasErrors = $true
+                $script:jsonFailed++
             }
         }
 
-        Remove-Item -Path $nestedExtractPath -Recurse -Force
+        try {
+            Remove-Item -Path $nestedExtractPath -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "Error cleaning up nested extract path $nestedExtractPath : $_"
+            $script:hasErrors = $true
+        }
     }
 
-    Remove-Item -Path $extractPath -Recurse -Force
+    try {
+        Remove-Item -Path $extractPath -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Host "Error cleaning up extract path $extractPath : $_"
+        $script:hasErrors = $true
+    }
+
+    $script:zipsProcessed++
 }
 
-# Export data
-foreach ($metricName in $aggregatedData.Keys) {
+foreach ($metricName in $script:aggregatedData.Keys) {
     $outputFilePath = Join-Path -Path $aggregateOutputPath -ChildPath "$metricName.json"
-    if ($aggregatedData[$metricName].Count -gt 0) {
-        $aggregatedData[$metricName] | ConvertTo-Json -Depth 5 | Out-File -FilePath $outputFilePath
+    if ($script:aggregatedData[$metricName].Count -gt 0) {
+        $script:aggregatedData[$metricName] | ConvertTo-Json -Depth 5 | Out-File -FilePath $outputFilePath
     } else {
         Write-Host "No data to write for $metricName"
-        # Log the occurrence of no data to write
-        Write-Log -Message "No data to write for $metricName"
     }
 }
 
 Write-Host "Aggregated data files saved to: $aggregateOutputPath"
-Write-Log -Message "Aggregated data files saved to: $aggregateOutputPath"
+Write-Host "Summary: zips processed=$($script:zipsProcessed), zips failed=$($script:zipsFailed), json processed=$($script:jsonProcessed), json failed=$($script:jsonFailed)"
 
-if ($hasErrors) {
+if ($script:hasErrors) {
     exit 1
 } else {
     exit 0

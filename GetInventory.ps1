@@ -191,15 +191,22 @@ function Get-SystemInfo {
             $domainInfo = $compSysInfo.Workgroup
         }
 
-        # Collecting last applied GPO information
-        $gpresult = gpresult /r /scope computer
-        foreach ($line in $gpresult) {
-            if ($line -match "Last time Group Policy was applied:\s+(.*)") {
-                $lastApplied = $matches[1].Trim()
-                #Write-Output "Computer GPO last applied: $lastApplied"
-                #break
+        # Collecting last applied GPO information.
+        # gpresult /r can hang indefinitely waiting on RSoP — bound it with Start-Job.
+        $lastApplied = "Unknown"
+        $gpresultJob = Start-Job -ScriptBlock { gpresult /r /scope computer }
+        if (Wait-Job -Job $gpresultJob -Timeout 60) {
+            $gpresult = Receive-Job -Job $gpresultJob
+            foreach ($line in $gpresult) {
+                if ($line -match "Last time Group Policy was applied:\s+(.*)") {
+                    $lastApplied = $matches[1].Trim()
+                }
             }
+        } else {
+            Stop-Job -Job $gpresultJob
+            Write-Log "gpresult timed out after 60s; lastApplied set to Unknown" $LogFilePath
         }
+        Remove-Job -Job $gpresultJob -Force
 
         # Calculating total RAM
         $totalRam = ($ramInfo | Measure-Object -Property Capacity -Sum).Sum / 1GB
@@ -421,12 +428,22 @@ function Get-UserProfileList {
         # Define the profile path for users
         $ProfilePath = ($env:SystemDrive + "\Users")
 
-        # Collecting user profile information
+        # Collecting user profile information.
+        # Size is computed via robocopy /L /S /BYTES — orders of magnitude faster
+        # than Get-ChildItem -Recurse | Measure-Object on large profiles, and it
+        # skips reparse points by default so it won't follow OneDrive cloud-only
+        # placeholders or junctions.
         $UserProfiles = Get-ChildItem -Path $ProfilePath -Directory -ErrorAction Stop |
-            Select-Object @{Name='ComputerName'; Expression={$ComputerName}}, 
-                          Name, CreationTime, LastWriteTime, FullName, 
+            Select-Object @{Name='ComputerName'; Expression={$ComputerName}},
+                          Name, CreationTime, LastWriteTime, FullName,
                           @{Name='UserProfileSizeMB'; Expression={
-                              (Get-ChildItem $_.FullName -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum /1Mb
+                              $roboOutput = robocopy $_.FullName 'NULL' /L /S /NFL /NDL /NJH /BYTES /R:0 /W:0 2>$null
+                              $bytesLine = $roboOutput | Where-Object { $_ -match '^\s*Bytes\s*:\s+\d+' } | Select-Object -First 1
+                              if ($bytesLine -and $bytesLine -match '^\s*Bytes\s*:\s+(\d+)') {
+                                  [math]::Round([int64]$matches[1] / 1MB, 2)
+                              } else {
+                                  0
+                              }
                           }}
 
         # Logging success
