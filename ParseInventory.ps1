@@ -1,7 +1,10 @@
 Param(
-    [string]$fileSharePath = "\\server\InventoryData",
-    [string]$extractPath = "C:\Temp\InventoryExtract",
-    [string]$aggregateOutputPath = "C:\AggregatedData"
+    [Parameter(Mandatory=$true)]
+    [string]$fileSharePath,
+    [Parameter(Mandatory=$true)]
+    [string]$extractPath,
+    [Parameter(Mandatory=$true)]
+    [string]$aggregateOutputPath
 )
 
 $nestedExtractPath = Join-Path -Path $extractPath -ChildPath "Nested"

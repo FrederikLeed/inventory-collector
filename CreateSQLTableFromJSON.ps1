@@ -1,7 +1,10 @@
 Param(
-    [string]$SqlServer = "sqlsrv01.domain.com", # Specify SQL ServerName
-    [string]$Database = "inventory", # Specify DatabaseName
-    [string]$JsonFilesPath = "D:\InventoryParsed"  # Update with the path to your JSON files
+    [Parameter(Mandatory=$true)]
+    [string]$SqlServer,
+    [Parameter(Mandatory=$true)]
+    [string]$Database,
+    [Parameter(Mandatory=$true)]
+    [string]$JsonFilesPath
 )
 
 # Dot-source shared SQL helpers

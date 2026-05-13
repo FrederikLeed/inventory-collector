@@ -1,8 +1,12 @@
 Param(
-    [string]$SqlServer = "server.domain.com", # Specify SQL ServerName
-    [string]$Database = "Inventory", # Specify DatabaseName
-    [string]$JsonFilesPath = "D:\InventoryParsed",  # Update with the path to your JSON files
-    [string]$logFilePath = "D:\Logs\InventorySQLlog.log"  # Define log file path
+    [Parameter(Mandatory=$true)]
+    [string]$SqlServer,
+    [Parameter(Mandatory=$true)]
+    [string]$Database,
+    [Parameter(Mandatory=$true)]
+    [string]$JsonFilesPath,
+    [Parameter(Mandatory=$true)]
+    [string]$logFilePath
 )
 
 # PowerShell Script to Update SQL Tables from JSON Files
