@@ -1,7 +1,7 @@
 # Testing
 
 This folder contains an end-to-end integration test for the SQL chain
-(`CreateSQLTableFromJSON.ps1` + `UpdateSQLTableFromJSON_new.ps1`) plus
+(`CreateSQLTableFromJSON.ps1` + `UpdateSQLTableFromJSON.ps1`) plus
 helpers for exercising the rest of the pipeline locally.
 
 ## Prerequisites
@@ -61,15 +61,13 @@ What it does:
 1. Creates a fresh `InventoryTest` database on `MSSQLLocalDB`
 2. Trims each JSON to 1000 rows (skips `InstalledUpdates` and `Invoice`),
    stamps each record with a per-Computer `RunId`, and writes a synthetic
-   `CollectionRuns.json` so the V1-shape fixture matches what the V2
-   pipeline emits today
-3. Runs `CreateSQLTableFromJSON.ps1` and asserts the V2 schema lands on a
+   `CollectionRuns.json` so the fixture matches what the pipeline emits
+3. Runs `CreateSQLTableFromJSON.ps1` and asserts the schema lands on a
    fresh DB in one step: `Computers` / `CollectionRuns` /
    `InstalledUpdates` infrastructure tables, fact tables with `RunId NOT
    NULL` + inline FK constraints, `vCurrent<TableName>` views, and the
-   cross-table `vCurrentInstalledUpdates` / `vStaleComputers` views — no
-   `UpdateTimeStamp`, no separate migration step
-4. Runs `UpdateSQLTableFromJSON_new.ps1` and asserts non-zero row counts,
+   cross-table `vCurrentInstalledUpdates` / `vStaleComputers` views
+4. Runs `UpdateSQLTableFromJSON.ps1` and asserts non-zero row counts,
    that `Computers` + `CollectionRuns` get populated from the sidecar,
    and that every fact row has a non-NULL `RunId`
 5. Re-runs the update and asserts no duplicates (`INSERT WHERE NOT
@@ -80,10 +78,9 @@ What it does:
    and verifies the row landed as literal data
 8. Exercises the schema-evolution branch: adds a column to a JSON,
    re-runs Create, verifies `ALTER TABLE` happened
-9. Exercises the V2 happy path end-to-end on a fresh-Computer payload:
-   asserts `Computers` / `CollectionRuns` get upserted from the
-   sidecar, fact rows land with the correct `RunId`, and idempotency
-   holds on re-run
+9. Exercises a fresh-Computer end-to-end load: asserts `Computers` /
+   `CollectionRuns` get upserted from the sidecar, fact rows land with
+   the correct `RunId`, and idempotency holds on re-run
 10. Verifies append-only behaviour: re-loading the same data with a
     new `RunId` adds new rows (snapshot) rather than overwriting;
     same `RunId` again is idempotent
@@ -94,14 +91,6 @@ What it does:
     `UninstalledAt` set, returning KBs clear it, new KBs insert with
     `FirstSeenRunId` = `LastSeenRunId`
 13. Drops the database and prints a pass/fail summary
-
-The `docs/migrations/V2_Phase1.sql` script is the V1 → V2 upgrade path
-for an existing pre-V2 database (no Computers/CollectionRuns, fact
-tables still on the `UpdateTimeStamp` shape). It is not exercised by
-the integration test because the test always starts from a fresh DB
-that the load scripts populate in V2 shape directly. Customers
-upgrading a V1 database should run Phase 1 manually before pointing
-the new load scripts at it.
 
 Exit code is 0 on green, 1 if any assertion failed.
 

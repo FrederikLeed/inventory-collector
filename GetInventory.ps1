@@ -4,10 +4,10 @@ param(
     [string]$centralFilesharePath = "\\server\InventoryData"
 )
 
-# Schema V2: every collection cycle has a single run identity carried through
-# into every metric record and into a _collection-meta.json sidecar. The
-# downstream pipeline uses this to populate dbo.CollectionRuns and to make
-# each fact row traceable back to its origin.
+# Every collection cycle has a single run identity carried through into every
+# metric record and into a _collection-meta.json sidecar. The downstream
+# pipeline uses this to populate dbo.CollectionRuns and to make each fact row
+# traceable back to its origin.
 $RunId     = ([guid]::NewGuid()).ToString()
 $StartedAt = (Get-Date).ToUniversalTime().ToString('o')
 
@@ -741,7 +741,7 @@ $scriptBlock = {
     $summaryLogPath = Join-Path -Path $baseFolderPath -ChildPath "${ComputerName}_summary.log"
     Write-Log "Collection complete: $successCount/$($metrics.Count) metrics succeeded. Failed: $($failedMetrics -join ', ')" $summaryLogPath
 
-    # Schema V2: per-run metadata sidecar. ParseInventory aggregates these into
+    # Per-run metadata sidecar. ParseInventory aggregates these into
     # CollectionRuns.json; the SQL loader inserts each row into dbo.CollectionRuns.
     $completedAt = (Get-Date).ToUniversalTime().ToString('o')
     $meta = [PSCustomObject]@{

@@ -80,9 +80,9 @@ Assert-True -Condition ($result -eq "only-item") -Message "Single-element array 
 $result = Convert-ToSimpleFormat @("a", "b", "c")
 Assert-True -Condition ($result -is [string] -and $result -match '"a"') -Message "Multi-element array serialized to JSON"
 
-# Int64
+# Int64 binds directly (target column is BIGINT)
 $result = Convert-ToSimpleFormat ([Int64]9999999999)
-Assert-True -Condition ($result -eq "9999999999" -and $result -is [string]) -Message "Int64 converted to string"
+Assert-True -Condition ($result -eq 9999999999 -and $result -is [Int64]) -Message "Int64 passes through unchanged"
 
 # Nested objects (like NTFSAccessList)
 $nested = @([PSCustomObject]@{AccessTo="Everyone"; Rights="Full"})

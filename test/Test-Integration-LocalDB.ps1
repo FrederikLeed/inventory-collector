@@ -1,8 +1,8 @@
 # Test-Integration-LocalDB.ps1
 # End-to-end integration test using SQL Server LocalDB.
-# Validates that CreateSQLTableFromJSON.ps1 produces the final V2 schema on a
-# fresh install (no migration step needed) and UpdateSQLTableFromJSON_new.ps1
-# loads V2-shape data into it correctly.
+# Validates that CreateSQLTableFromJSON.ps1 produces the full schema on a
+# fresh install in one step and UpdateSQLTableFromJSON.ps1 loads data into it
+# correctly.
 
 param(
     [string]$SampleDataPath = (Join-Path -Path $PSScriptRoot -ChildPath "sample-data\InventoryParsed")
@@ -37,13 +37,11 @@ $DbConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=
 Add-Type -AssemblyName "System.Data"
 
 # ============================================================
-Write-Host "`n=== Setup: Prepare trimmed test data (V2-shape) ===" -ForegroundColor Cyan
+Write-Host "`n=== Setup: Prepare trimmed test data ===" -ForegroundColor Cyan
 # ============================================================
-# Customer fixture is V1-shape (no RunId, no CollectionRuns.json). The
-# production pipeline emits V2-shape since the Phase 2 changes - tests have to
-# match. We trim rows, then stamp each record with a per-Computer RunId and
-# build a CollectionRuns.json so the fixture mirrors what GetInventory/
-# ParseInventory emit today.
+# The committed fixture has no RunId or CollectionRuns.json, so we trim rows,
+# stamp each record with a per-Computer RunId, and build a CollectionRuns.json
+# so the fixture mirrors what GetInventory + ParseInventory emit.
 
 if (Test-Path $TrimmedDataPath) { Remove-Item $TrimmedDataPath -Recurse -Force }
 New-Item -ItemType Directory -Path $TrimmedDataPath -Force | Out-Null
@@ -134,7 +132,7 @@ finally {
 }
 
 # ============================================================
-Write-Host "`n=== Test 1: CreateSQLTableFromJSON.ps1 produces V2 schema ===" -ForegroundColor Cyan
+Write-Host "`n=== Test 1: CreateSQLTableFromJSON.ps1 produces full schema ===" -ForegroundColor Cyan
 # ============================================================
 
 try {
@@ -146,13 +144,13 @@ try {
         $conn.Open()
         $cmd = $conn.CreateCommand()
 
-        # V2 infrastructure tables exist
+        # Infrastructure tables exist
         $cmd.CommandText = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME IN ('Computers','CollectionRuns','InstalledUpdates')"
-        Assert-True -Condition ($cmd.ExecuteScalar() -eq 3) -Message "V2 infrastructure: Computers + CollectionRuns + InstalledUpdates all exist"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 3) -Message "Infrastructure: Computers + CollectionRuns + InstalledUpdates all exist"
 
         # Cross-table views exist
         $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name IN ('vCurrentInstalledUpdates','vStaleComputers')"
-        Assert-True -Condition ($cmd.ExecuteScalar() -eq 2) -Message "V2 infrastructure: vCurrentInstalledUpdates + vStaleComputers views exist"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 2) -Message "Infrastructure: vCurrentInstalledUpdates + vStaleComputers views exist"
 
         # Fact tables created from JSON
         $cmd.CommandText = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
@@ -169,7 +167,7 @@ try {
             Assert-True -Condition ($tables -contains $expected) -Message "Table '$expected' exists"
         }
 
-        # V2 fact-table shape: ComputerName, RunId, CreatedAt present; UpdateTimeStamp gone
+        # Fact-table shape: ComputerName, RunId, CreatedAt present
         $cmd.CommandText = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @TableName"
         $cmd.Parameters.AddWithValue("@TableName", "InstalledSoftware") | Out-Null
         $reader = $cmd.ExecuteReader()
@@ -180,9 +178,8 @@ try {
         Assert-True -Condition ($columns -contains "ComputerName") -Message "InstalledSoftware has ComputerName column"
         Assert-True -Condition ($columns -contains "DisplayName") -Message "InstalledSoftware has DisplayName column"
         Assert-True -Condition ($columns -contains "Id") -Message "InstalledSoftware has Id column (auto-added)"
-        Assert-True -Condition ($columns -contains "RunId") -Message "InstalledSoftware has RunId column (V2)"
-        Assert-True -Condition ($columns -contains "CreatedAt") -Message "InstalledSoftware has CreatedAt column (V2)"
-        Assert-True -Condition ($columns -notcontains "UpdateTimeStamp") -Message "InstalledSoftware does NOT have UpdateTimeStamp (V2 - dropped)"
+        Assert-True -Condition ($columns -contains "RunId") -Message "InstalledSoftware has RunId column"
+        Assert-True -Condition ($columns -contains "CreatedAt") -Message "InstalledSoftware has CreatedAt column"
 
         # FK constraints exist
         $cmd.Parameters.Clear()
@@ -208,11 +205,11 @@ try {
 }
 
 # ============================================================
-Write-Host "`n=== Test 2: UpdateSQLTableFromJSON_new.ps1 (INSERT) ===" -ForegroundColor Cyan
+Write-Host "`n=== Test 2: UpdateSQLTableFromJSON.ps1 (INSERT) ===" -ForegroundColor Cyan
 # ============================================================
 
 try {
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath $LogFile
     Write-Host ""
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
@@ -251,21 +248,21 @@ try {
         Assert-True -Condition ($null -ne $value -and $value -ne [DBNull]::Value -and $value -is [string] -and $value.Length -gt 0) `
             -Message "GroupMembers.Members stored as non-empty string for at least one row (length: $(if ($value -is [string]) { $value.Length } else { 'n/a' }))"
 
-        # Every fact row has a non-NULL RunId (V2 enforces NOT NULL)
+        # Every fact row has a non-NULL RunId (schema enforces NOT NULL)
         $cmd.Parameters.Clear()
         $cmd.CommandText = "SELECT COUNT(*) FROM [InstalledSoftware] WHERE RunId IS NULL"
-        Assert-True -Condition ($cmd.ExecuteScalar() -eq 0) -Message "Every InstalledSoftware row has RunId (V2 NOT NULL)"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 0) -Message "Every InstalledSoftware row has RunId (NOT NULL)"
     }
     finally {
         $conn.Dispose()
     }
 } catch {
-    Write-Host "  FAIL: UpdateSQLTableFromJSON_new (INSERT) threw: $_" -ForegroundColor Red
+    Write-Host "  FAIL: UpdateSQLTableFromJSON (INSERT) threw: $_" -ForegroundColor Red
     $script:TestsFailed++
 }
 
 # ============================================================
-Write-Host "`n=== Test 3: UpdateSQLTableFromJSON_new.ps1 (idempotent re-run) ===" -ForegroundColor Cyan
+Write-Host "`n=== Test 3: UpdateSQLTableFromJSON.ps1 (idempotent re-run) ===" -ForegroundColor Cyan
 # ============================================================
 # Same RunId on every record - INSERT WHERE NOT EXISTS via the natural key
 # blocks duplication.
@@ -282,7 +279,7 @@ try {
         $conn.Dispose()
     }
 
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath $LogFile
     Write-Host ""
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
@@ -299,14 +296,14 @@ try {
         $conn.Dispose()
     }
 } catch {
-    Write-Host "  FAIL: UpdateSQLTableFromJSON_new (re-run) threw: $_" -ForegroundColor Red
+    Write-Host "  FAIL: UpdateSQLTableFromJSON (re-run) threw: $_" -ForegroundColor Red
     $script:TestsFailed++
 }
 
 # ============================================================
 Write-Host "`n=== Test 4: SQL injection value is safely stored ===" -ForegroundColor Cyan
 # ============================================================
-# Direct parameterized insert. With V2 FKs we need an existing Computer +
+# Direct parameterized insert. With FKs we need an existing Computer +
 # CollectionRun to reference - use the first one from the fixture.
 
 try {
@@ -380,7 +377,7 @@ $injectStartedAt = (Get-Date).ToUniversalTime().ToString('o')
 
 try {
     & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $InjectionFolder
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $InjectionFolder -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $InjectionFolder -logFilePath $LogFile
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
     try {
@@ -419,7 +416,7 @@ $schemaRun1 = ([guid]::NewGuid()).ToString()
 $schemaRun2 = ([guid]::NewGuid()).ToString()
 $schemaStartedAt = (Get-Date).ToUniversalTime().ToString('o')
 
-# Initial schema: 2 columns + V2 spine
+# Initial schema: 2 columns + RunId + CreatedAt
 @(
     [PSCustomObject]@{ ComputerName = "SCHEMA-01"; OriginalCol = "v1"; RunId = $schemaRun1 }
 ) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $SchemaFolder "SchemaEvolution.json") -Encoding UTF8
@@ -479,7 +476,7 @@ try {
         Assert-True -Condition ($finalColumns -contains "AddedCol") -Message "Schema evolution: AddedCol added via ALTER TABLE"
 
         # Verify Update script can insert into the evolved schema
-        & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $SchemaFolder -logFilePath $LogFile
+        & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $SchemaFolder -logFilePath $LogFile
 
         $cmd.CommandText = "SELECT [AddedCol] FROM [SchemaEvolution] WHERE [ComputerName] = @cn"
         $cmd.Parameters.AddWithValue("@cn", "SCHEMA-02") | Out-Null
@@ -494,42 +491,42 @@ try {
 }
 
 # ============================================================
-Write-Host "`n=== Test 7: V2 happy path (new Computer end-to-end) ===" -ForegroundColor Cyan
+Write-Host "`n=== Test 7: Fresh-Computer end-to-end load ===" -ForegroundColor Cyan
 # ============================================================
 # Simulates GetInventory -> ParseInventory -> SQL load for a fresh Computer:
 # every record carries a RunId, CollectionRuns.json holds per-run metadata.
 # Asserts Computers + CollectionRuns get upserted and fact rows land with
 # RunId populated.
 
-$Phase2Folder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\Phase2HappyPath'
-if (Test-Path $Phase2Folder) { Remove-Item $Phase2Folder -Recurse -Force }
-New-Item -ItemType Directory -Path $Phase2Folder -Force | Out-Null
+$FreshLoadFolder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\FreshLoad'
+if (Test-Path $FreshLoadFolder) { Remove-Item $FreshLoadFolder -Recurse -Force }
+New-Item -ItemType Directory -Path $FreshLoadFolder -Force | Out-Null
 
-$phase2Run1 = ([guid]::NewGuid()).ToString()
-$phase2Run2 = ([guid]::NewGuid()).ToString()
-$phase2Started = (Get-Date).ToUniversalTime().ToString('o')
+$freshRun1 = ([guid]::NewGuid()).ToString()
+$freshRun2 = ([guid]::NewGuid()).ToString()
+$freshStarted = (Get-Date).ToUniversalTime().ToString('o')
 
 @(
-    [PSCustomObject]@{ ComputerName = 'PHASE2-A'; Note = 'first';  RunId = $phase2Run1 }
-    [PSCustomObject]@{ ComputerName = 'PHASE2-B'; Note = 'second'; RunId = $phase2Run2 }
-) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase2Folder 'Phase2Demo.json') -Encoding UTF8
+    [PSCustomObject]@{ ComputerName = 'FRESH-A'; Note = 'first';  RunId = $freshRun1 }
+    [PSCustomObject]@{ ComputerName = 'FRESH-B'; Note = 'second'; RunId = $freshRun2 }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $FreshLoadFolder 'FreshLoadDemo.json') -Encoding UTF8
 
 @(
     [PSCustomObject]@{
-        RunId = $phase2Run1; ComputerName = 'PHASE2-A'; StartedAt = $phase2Started
-        CompletedAt = $phase2Started; Status = 'Loaded'
+        RunId = $freshRun1; ComputerName = 'FRESH-A'; StartedAt = $freshStarted
+        CompletedAt = $freshStarted; Status = 'Loaded'
         MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
     }
     [PSCustomObject]@{
-        RunId = $phase2Run2; ComputerName = 'PHASE2-B'; StartedAt = $phase2Started
-        CompletedAt = $phase2Started; Status = 'Loaded'
+        RunId = $freshRun2; ComputerName = 'FRESH-B'; StartedAt = $freshStarted
+        CompletedAt = $freshStarted; Status = 'Loaded'
         MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
     }
-) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase2Folder 'CollectionRuns.json') -Encoding UTF8
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $FreshLoadFolder 'CollectionRuns.json') -Encoding UTF8
 
 try {
-    & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase2Folder
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase2Folder -logFilePath $LogFile
+    & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $FreshLoadFolder
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $FreshLoadFolder -logFilePath $LogFile
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
     try {
@@ -537,54 +534,54 @@ try {
         $cmd = $conn.CreateCommand()
 
         $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns WHERE RunId IN (@r1, @r2)"
-        $cmd.Parameters.AddWithValue('@r1', [Guid]::Parse($phase2Run1)) | Out-Null
-        $cmd.Parameters.AddWithValue('@r2', [Guid]::Parse($phase2Run2)) | Out-Null
+        $cmd.Parameters.AddWithValue('@r1', [Guid]::Parse($freshRun1)) | Out-Null
+        $cmd.Parameters.AddWithValue('@r2', [Guid]::Parse($freshRun2)) | Out-Null
         $runsLoaded = $cmd.ExecuteScalar()
-        Assert-True -Condition ($runsLoaded -eq 2) -Message "V2 happy path: CollectionRuns has both new RunIds ($runsLoaded/2)"
+        Assert-True -Condition ($runsLoaded -eq 2) -Message "Fresh load: CollectionRuns has both new RunIds ($runsLoaded/2)"
 
         $cmd.Parameters.Clear()
-        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers WHERE ComputerName IN ('PHASE2-A', 'PHASE2-B')"
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Computers WHERE ComputerName IN ('FRESH-A', 'FRESH-B')"
         $newComputers = $cmd.ExecuteScalar()
-        Assert-True -Condition ($newComputers -eq 2) -Message "V2 happy path: both Computers upserted ($newComputers/2)"
+        Assert-True -Condition ($newComputers -eq 2) -Message "Fresh load: both Computers upserted ($newComputers/2)"
 
         $cmd.Parameters.Clear()
-        $cmd.CommandText = "SELECT RunId FROM dbo.Phase2Demo WHERE ComputerName = @cn"
-        $cmd.Parameters.AddWithValue('@cn', 'PHASE2-A') | Out-Null
+        $cmd.CommandText = "SELECT RunId FROM dbo.FreshLoadDemo WHERE ComputerName = @cn"
+        $cmd.Parameters.AddWithValue('@cn', 'FRESH-A') | Out-Null
         $factRunId = $cmd.ExecuteScalar()
-        Assert-True -Condition ($factRunId -is [Guid] -and $factRunId.ToString() -eq $phase2Run1) `
-            -Message "V2 happy path: Phase2Demo[PHASE2-A].RunId = expected ($factRunId)"
+        Assert-True -Condition ($factRunId -is [Guid] -and $factRunId.ToString() -eq $freshRun1) `
+            -Message "Fresh load: FreshLoadDemo[FRESH-A].RunId = expected ($factRunId)"
 
         $cmd.Parameters.Clear()
-        $cmd.CommandText = "SELECT LastRunId FROM dbo.Computers WHERE ComputerName = 'PHASE2-B'"
+        $cmd.CommandText = "SELECT LastRunId FROM dbo.Computers WHERE ComputerName = 'FRESH-B'"
         $lastRunId = $cmd.ExecuteScalar()
-        Assert-True -Condition ($lastRunId -is [Guid] -and $lastRunId.ToString() -eq $phase2Run2) `
-            -Message "V2 happy path: Computers[PHASE2-B].LastRunId points at the new run"
+        Assert-True -Condition ($lastRunId -is [Guid] -and $lastRunId.ToString() -eq $freshRun2) `
+            -Message "Fresh load: Computers[FRESH-B].LastRunId points at the new run"
     } finally {
         $conn.Dispose()
     }
 
     # Idempotency: re-running the same load doesn't duplicate
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase2Folder -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $FreshLoadFolder -logFilePath $LogFile
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
     try {
         $conn.Open()
         $cmd = $conn.CreateCommand()
         $cmd.CommandText = "SELECT COUNT(*) FROM dbo.CollectionRuns WHERE RunId IN (@r1, @r2)"
-        $cmd.Parameters.AddWithValue('@r1', [Guid]::Parse($phase2Run1)) | Out-Null
-        $cmd.Parameters.AddWithValue('@r2', [Guid]::Parse($phase2Run2)) | Out-Null
+        $cmd.Parameters.AddWithValue('@r1', [Guid]::Parse($freshRun1)) | Out-Null
+        $cmd.Parameters.AddWithValue('@r2', [Guid]::Parse($freshRun2)) | Out-Null
         $runsAfter = $cmd.ExecuteScalar()
-        Assert-True -Condition ($runsAfter -eq 2) -Message "V2 happy path: CollectionRuns unchanged on re-run ($runsAfter still 2)"
+        Assert-True -Condition ($runsAfter -eq 2) -Message "Fresh load: CollectionRuns unchanged on re-run ($runsAfter still 2)"
 
         $cmd.Parameters.Clear()
-        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Phase2Demo"
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.FreshLoadDemo"
         $factCount = $cmd.ExecuteScalar()
-        Assert-True -Condition ($factCount -eq 2) -Message "V2 happy path: Phase2Demo unchanged on re-run ($factCount still 2)"
+        Assert-True -Condition ($factCount -eq 2) -Message "Fresh load: FreshLoadDemo unchanged on re-run ($factCount still 2)"
     } finally {
         $conn.Dispose()
     }
 } catch {
-    Write-Host "  FAIL: V2 happy path test threw: $_" -ForegroundColor Red
+    Write-Host "  FAIL: Fresh load test threw: $_" -ForegroundColor Red
     $script:TestsFailed++
 }
 
@@ -595,34 +592,34 @@ Write-Host "`n=== Test 8: Append-only behaviour (snapshot grows with new RunId) 
 # RunId. Snapshot tables append rather than upsert, so the row count grows.
 # Same RunId again is idempotent (INSERT WHERE NOT EXISTS blocks dupes).
 
-$Phase3Folder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\Phase3Append'
-if (Test-Path $Phase3Folder) { Remove-Item $Phase3Folder -Recurse -Force }
-New-Item -ItemType Directory -Path $Phase3Folder -Force | Out-Null
+$AppendOnlyFolder = Join-Path -Path $PSScriptRoot -ChildPath 'sample-data\AppendOnly'
+if (Test-Path $AppendOnlyFolder) { Remove-Item $AppendOnlyFolder -Recurse -Force }
+New-Item -ItemType Directory -Path $AppendOnlyFolder -Force | Out-Null
 
-$phase3RunA = ([guid]::NewGuid()).ToString()
-$phase3RunB = ([guid]::NewGuid()).ToString()
-$phase3Started = (Get-Date).ToUniversalTime().ToString('o')
+$appendRunA = ([guid]::NewGuid()).ToString()
+$appendRunB = ([guid]::NewGuid()).ToString()
+$appendStarted = (Get-Date).ToUniversalTime().ToString('o')
 
 @(
-    [PSCustomObject]@{ ComputerName = 'PHASE2-A'; Note = 'phase3-A'; RunId = $phase3RunA }
-    [PSCustomObject]@{ ComputerName = 'PHASE2-B'; Note = 'phase3-B'; RunId = $phase3RunB }
-) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase3Folder 'Phase2Demo.json') -Encoding UTF8
+    [PSCustomObject]@{ ComputerName = 'FRESH-A'; Note = 'updated-A'; RunId = $appendRunA }
+    [PSCustomObject]@{ ComputerName = 'FRESH-B'; Note = 'updated-B'; RunId = $appendRunB }
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $AppendOnlyFolder 'FreshLoadDemo.json') -Encoding UTF8
 
 @(
     [PSCustomObject]@{
-        RunId = $phase3RunA; ComputerName = 'PHASE2-A'; StartedAt = $phase3Started
-        CompletedAt = $phase3Started; Status = 'Loaded'
+        RunId = $appendRunA; ComputerName = 'FRESH-A'; StartedAt = $appendStarted
+        CompletedAt = $appendStarted; Status = 'Loaded'
         MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
     }
     [PSCustomObject]@{
-        RunId = $phase3RunB; ComputerName = 'PHASE2-B'; StartedAt = $phase3Started
-        CompletedAt = $phase3Started; Status = 'Loaded'
+        RunId = $appendRunB; ComputerName = 'FRESH-B'; StartedAt = $appendStarted
+        CompletedAt = $appendStarted; Status = 'Loaded'
         MetricsSucceeded = 1; MetricsFailed = 0; FailedMetrics = ''
     }
-) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $Phase3Folder 'CollectionRuns.json') -Encoding UTF8
+) | ConvertTo-Json -Depth 5 | Out-File -FilePath (Join-Path $AppendOnlyFolder 'CollectionRuns.json') -Encoding UTF8
 
 try {
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase3Folder -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $AppendOnlyFolder -logFilePath $LogFile
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
     try {
@@ -630,17 +627,17 @@ try {
         $cmd = $conn.CreateCommand()
 
         # 4 rows total: 2 from Test 7 + 2 from Test 8
-        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Phase2Demo"
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.FreshLoadDemo"
         $appendCount = $cmd.ExecuteScalar()
-        Assert-True -Condition ($appendCount -eq 4) -Message "Append-only: Phase2Demo grew (4 rows total: 2 old + 2 new)"
+        Assert-True -Condition ($appendCount -eq 4) -Message "Append-only: FreshLoadDemo grew (4 rows total: 2 old + 2 new)"
 
-        $cmd.CommandText = "SELECT COUNT(DISTINCT RunId) FROM dbo.Phase2Demo WHERE ComputerName = 'PHASE2-A'"
-        Assert-True -Condition ($cmd.ExecuteScalar() -eq 2) -Message "Append-only: PHASE2-A has 2 distinct RunIds in Phase2Demo"
+        $cmd.CommandText = "SELECT COUNT(DISTINCT RunId) FROM dbo.FreshLoadDemo WHERE ComputerName = 'FRESH-A'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 2) -Message "Append-only: FRESH-A has 2 distinct RunIds in FreshLoadDemo"
 
         # Same-RunId re-run: idempotent
-        & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $Phase3Folder -logFilePath $LogFile
+        & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $AppendOnlyFolder -logFilePath $LogFile
 
-        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.Phase2Demo"
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.FreshLoadDemo"
         Assert-True -Condition ($cmd.ExecuteScalar() -eq 4) -Message "Append-only: same-RunId re-run is idempotent (still 4)"
     } finally {
         $conn.Dispose()
@@ -660,19 +657,19 @@ try {
         $conn.Open()
         $cmd = $conn.CreateCommand()
 
-        # vCurrentPhase2Demo was created inline when Phase2Demo table was created
-        $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name = 'vCurrentPhase2Demo'"
-        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "vCurrentPhase2Demo view exists (created inline by Create script)"
+        # vCurrentFreshLoadDemo was created inline when FreshLoadDemo table was created
+        $cmd.CommandText = "SELECT COUNT(*) FROM sys.views WHERE name = 'vCurrentFreshLoadDemo'"
+        Assert-True -Condition ($cmd.ExecuteScalar() -eq 1) -Message "vCurrentFreshLoadDemo view exists (created inline by Create script)"
 
         # The view returns exactly 2 rows (latest snapshot per ComputerName)
-        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.vCurrentPhase2Demo"
+        $cmd.CommandText = "SELECT COUNT(*) FROM dbo.vCurrentFreshLoadDemo"
         $viewCount = $cmd.ExecuteScalar()
-        Assert-True -Condition ($viewCount -eq 2) -Message "vCurrentPhase2Demo returns 1 row per Computer ($viewCount rows)"
+        Assert-True -Condition ($viewCount -eq 2) -Message "vCurrentFreshLoadDemo returns 1 row per Computer ($viewCount rows)"
 
-        # Those rows are the PHASE 3 versions (latest)
-        $cmd.CommandText = "SELECT Note FROM dbo.vCurrentPhase2Demo WHERE ComputerName = 'PHASE2-A'"
+        # Those rows are the second-run versions (latest)
+        $cmd.CommandText = "SELECT Note FROM dbo.vCurrentFreshLoadDemo WHERE ComputerName = 'FRESH-A'"
         $note = $cmd.ExecuteScalar()
-        Assert-True -Condition ($note -eq 'phase3-A') -Message "vCurrentPhase2Demo shows latest Note for PHASE2-A ('$note')"
+        Assert-True -Condition ($note -eq 'updated-A') -Message "vCurrentFreshLoadDemo shows latest Note for FRESH-A ('$note')"
     } finally {
         $conn.Dispose()
     }
@@ -720,7 +717,7 @@ function Write-DiffRun {
 
 try {
     Write-DiffRun -RunId $diffRunA -Titles @('KB1', 'KB2', 'KB3') -Folder $DiffFolder
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $DiffFolder -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $DiffFolder -logFilePath $LogFile
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
     try {
@@ -738,7 +735,7 @@ try {
 
     # Run B: KB1, KB2, KB4 (no KB3)
     Write-DiffRun -RunId $diffRunB -Titles @('KB1', 'KB2', 'KB4') -Folder $DiffFolder
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $DiffFolder -logFilePath $LogFile
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $DiffFolder -logFilePath $LogFile
 
     $conn = New-Object System.Data.SqlClient.SqlConnection($DbConnectionString)
     try {
@@ -806,8 +803,8 @@ finally {
 if (Test-Path $TrimmedDataPath) { Remove-Item $TrimmedDataPath -Recurse -Force }
 if (Test-Path $InjectionFolder) { Remove-Item $InjectionFolder -Recurse -Force }
 if (Test-Path $SchemaFolder)    { Remove-Item $SchemaFolder    -Recurse -Force }
-if (Test-Path $Phase2Folder)    { Remove-Item $Phase2Folder    -Recurse -Force }
-if (Test-Path $Phase3Folder)    { Remove-Item $Phase3Folder    -Recurse -Force }
+if (Test-Path $FreshLoadFolder)    { Remove-Item $FreshLoadFolder    -Recurse -Force }
+if (Test-Path $AppendOnlyFolder)    { Remove-Item $AppendOnlyFolder    -Recurse -Force }
 if (Test-Path $DiffFolder)      { Remove-Item $DiffFolder      -Recurse -Force }
 if (Test-Path $LogFile) { Remove-Item $LogFile -Force }
 

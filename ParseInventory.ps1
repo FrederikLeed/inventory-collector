@@ -13,7 +13,7 @@ New-Item -Path $extractPath, $nestedExtractPath, $aggregateOutputPath -ItemType 
 
 # Script-scoped so writes from inside ForEach-Object script blocks propagate.
 $script:aggregatedData = @{}
-$script:collectionRuns = @()   # Schema V2: one entry per _collection-meta.json found
+$script:collectionRuns = @()   # one entry per _collection-meta.json found
 $script:hasErrors      = $false
 $script:zipsProcessed  = 0
 $script:zipsFailed     = 0
@@ -32,9 +32,8 @@ Get-ChildItem -Path $fileSharePath -Filter "*.zip" | ForEach-Object {
         return
     }
 
-    # Schema V2: pick up the per-run metadata sidecar if present at the top
-    # level of the outer zip. GetInventory >= V2 writes this; older zips
-    # without it are silently skipped (the SQL loader can fall back).
+    # Pick up the per-run metadata sidecar from the top level of the outer
+    # zip. GetInventory writes this on every collection.
     $metaPath = Join-Path -Path $extractPath -ChildPath '_collection-meta.json'
     if (Test-Path $metaPath) {
         try {
@@ -106,8 +105,8 @@ foreach ($metricName in $script:aggregatedData.Keys) {
     }
 }
 
-# Schema V2: aggregate the per-run metadata into CollectionRuns.json. The SQL
-# loader picks this up and writes to dbo.CollectionRuns + dbo.Computers.
+# Aggregate the per-run metadata into CollectionRuns.json. The SQL loader
+# picks this up and writes to dbo.CollectionRuns + dbo.Computers.
 if ($script:collectionRuns.Count -gt 0) {
     $runsPath = Join-Path -Path $aggregateOutputPath -ChildPath 'CollectionRuns.json'
     $script:collectionRuns | ConvertTo-Json -Depth 5 | Out-File -FilePath $runsPath -Encoding UTF8

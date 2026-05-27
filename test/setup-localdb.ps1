@@ -36,7 +36,7 @@ Get-ChildItem -Path $SampleDataPath -Filter "*.json" | Where-Object {
 
 # Create tables + insert data
 & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath
-& "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath (Join-Path $PSScriptRoot "setup.log")
+& "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath (Join-Path $PSScriptRoot "setup.log")
 
 # Show summary
 Write-Host "`nDatabase ready. Connect with:" -ForegroundColor Green

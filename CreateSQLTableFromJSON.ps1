@@ -17,12 +17,12 @@ $ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=Tr
 # so the scheduler's step gating actually breaks the chain on failure.
 $script:hasErrors = $false
 
-# Initialise the full V2 infrastructure in one idempotent pass so a fresh DB
-# is one-step: Computers, CollectionRuns, the differential InstalledUpdates
-# table, and the cross-table frontend views. Fact tables are created later by
-# New-SqlTableFromJson with their JSON-derived columns plus the V2 spine
-# (RunId NOT NULL, FKs, vCurrent<Table> view). No separate "migration" needed.
-function Initialize-V2InfrastructureTables {
+# Initialise the infrastructure tables (Computers, CollectionRuns, the
+# differential InstalledUpdates table, and the cross-table views) in one
+# idempotent pass. Fact tables are created later by New-SqlTableFromJson with
+# their JSON-derived columns plus RunId NOT NULL, FKs, and a vCurrent<Table>
+# view.
+function Initialize-InfrastructureTables {
     $SqlConnection = New-Object System.Data.SqlClient.SqlConnection
     $SqlConnection.ConnectionString = $ConnectionString
     try {
@@ -80,6 +80,10 @@ BEGIN
         CONSTRAINT FK_InstalledUpdates_LastRun   FOREIGN KEY (LastSeenRunId)  REFERENCES dbo.CollectionRuns(RunId)
     );
     CREATE UNIQUE INDEX UX_InstalledUpdates_Natural ON dbo.InstalledUpdates (ComputerName, Title);
+    -- FK targets: without these, CollectionRuns DELETE would force a full
+    -- table scan to validate FK_InstalledUpdates_FirstRun / _LastRun.
+    CREATE INDEX IX_InstalledUpdates_FirstRun ON dbo.InstalledUpdates (FirstSeenRunId);
+    CREATE INDEX IX_InstalledUpdates_LastRun  ON dbo.InstalledUpdates (LastSeenRunId);
 END
 "@
         $SqlCommand.ExecuteNonQuery() | Out-Null
@@ -158,8 +162,7 @@ function Get-SqlTableSchema {
 }
 
 # Creates the vCurrent<TableName> view: latest-Loaded-run snapshot per
-# ComputerName. The frontend (Power BI / Grafana / Excel) reads these
-# views directly - they're the public contract.
+# ComputerName.
 function New-VCurrentView {
     param ([string]$TableName)
 
@@ -212,6 +215,15 @@ function New-SqlTableFromJson {
     try {
         Test-SqlIdentifier -Name $TableName -Context "table name"
 
+        # Natural-key string columns must fit SQL Server's 1700-byte index
+        # key limit. NVARCHAR(MAX) can't be in an index key at all, so cap any
+        # column that appears in the natural key to NVARCHAR(256).
+        $naturalKeyCols = Get-NaturalKey -TableName $TableName
+        $indexedStringCols = @{}
+        foreach ($k in $naturalKeyCols) {
+            if ($k -ne 'RunId' -and $k -ne 'ComputerName') { $indexedStringCols[$k] = $true }
+        }
+
         # Start building the SQL CREATE TABLE command
         $SqlCreateTableCommand = "CREATE TABLE [$TableName] ("
         $columnsFromJson = @{}
@@ -221,18 +233,19 @@ function New-SqlTableFromJson {
             $ColumnName = $Property.Name
             Test-SqlIdentifier -Name $ColumnName -Context "column name"
 
-            # Special-case columns whose semantics are fixed by Schema V2.
-            # Everything else keeps the V1 NVARCHAR(MAX) / INT / BIT mapping.
+            # Special-case columns whose semantics are fixed by the schema.
+            # Everything else takes the default NVARCHAR(MAX) / INT / BIT mapping.
             switch ($ColumnName) {
                 'ComputerName' { $DataType = "NVARCHAR(128) NOT NULL" }
                 'RunId'        { $DataType = "UNIQUEIDENTIFIER NOT NULL" }
                 'CreatedAt'    { $DataType = "DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()" }
                 default {
                     $DataType = switch ($Property.TypeNameOfValue) {
-                        "System.String" { "NVARCHAR(MAX)" }
-                        "System.Int32"  { "INT" }
-                        "System.Boolean"{ "BIT" }
-                        Default         { "NVARCHAR(MAX)" }
+                        "System.String"  { if ($indexedStringCols.ContainsKey($ColumnName)) { "NVARCHAR(256)" } else { "NVARCHAR(MAX)" } }
+                        "System.Int32"   { "BIGINT" }
+                        "System.Int64"   { "BIGINT" }
+                        "System.Boolean" { "BIT" }
+                        Default          { if ($indexedStringCols.ContainsKey($ColumnName)) { "NVARCHAR(256)" } else { "NVARCHAR(MAX)" } }
                     }
                 }
             }
@@ -244,9 +257,9 @@ function New-SqlTableFromJson {
         # Surrogate PK for backwards-compat with any tooling that joins on Id.
         $SqlCreateTableCommand += "[Id] INT IDENTITY(1,1) PRIMARY KEY"
 
-        # V2 spine: RunId + CreatedAt always present. Add them if the JSON
-        # didn't supply them (the V2 pipeline always supplies RunId; the
-        # CreatedAt clause covers data flowing in via other entry points).
+        # RunId + CreatedAt are always present on every fact table. Add them
+        # if the JSON didn't supply them (the pipeline always supplies RunId;
+        # the CreatedAt clause covers data flowing in via other entry points).
         if (-not $columnsFromJson.ContainsKey('RunId')) {
             $SqlCreateTableCommand += ", [RunId] UNIQUEIDENTIFIER NOT NULL"
             $columnsFromJson['RunId'] = $true
@@ -276,13 +289,21 @@ function New-SqlTableFromJson {
             $SqlCommand.ExecuteNonQuery()
 
             Write-Host "Table $TableName created successfully."
+
+            # UNIQUE index on (RunId, ...natural key...). Leftmost RunId makes
+            # cascade deletes seek instead of scan; the full natural key makes
+            # the WHERE NOT EXISTS dedup a covering seek too. UNIQUE doubles
+            # as a defense-in-depth idempotency guarantee.
+            $naturalKey = Get-NaturalKey -TableName $TableName
+            $keyCols    = ($naturalKey | ForEach-Object { "[$_]" }) -join ', '
+            $SqlCommand.CommandText = "CREATE UNIQUE NONCLUSTERED INDEX [UX_${TableName}_Natural] ON [$TableName] ($keyCols)"
+            $SqlCommand.ExecuteNonQuery() | Out-Null
+            Write-Host "Index UX_${TableName}_Natural created on ($($naturalKey -join ', '))."
         }
         finally {
             $SqlConnection.Dispose()
         }
 
-        # vCurrent view sits on top of the table; create it right after so the
-        # frontend contract is in place from the first run.
         New-VCurrentView -TableName $TableName
     }
     catch {
@@ -360,6 +381,29 @@ function Remove-SqlColumn {
     }
 }
 
+# Builds one PSCustomObject whose property set is the UNION of every row's
+# properties. For each property the first non-null value seen wins, falling
+# back to $null if it's null everywhere. Heterogeneous JSON (some servers
+# expose extra Defender fields, properties that are null fleet-wide on this
+# snapshot, etc.) needs this so every column makes it into the CREATE/ALTER.
+function Get-MergedJsonItem {
+    param ([Parameter(Mandatory)]$JsonArray)
+    if (-not ($JsonArray -is [System.Array])) { $JsonArray = @($JsonArray) }
+
+    $merged = [ordered]@{}
+    foreach ($row in $JsonArray) {
+        if ($null -eq $row) { continue }
+        foreach ($prop in $row.PSObject.Properties) {
+            if (-not $merged.Contains($prop.Name)) {
+                $merged[$prop.Name] = $prop.Value
+            } elseif ($null -eq $merged[$prop.Name] -and $null -ne $prop.Value) {
+                $merged[$prop.Name] = $prop.Value
+            }
+        }
+    }
+    return [PSCustomObject]$merged
+}
+
 # Function to update a SQL table based on JSON schema
 function Update-SqlTableFromJson {
     param (
@@ -368,37 +412,32 @@ function Update-SqlTableFromJson {
 
     try {
         $JsonArray = Get-Content -Path $JsonFilePath -Raw | ConvertFrom-Json
-        $FirstJsonItem = if ($JsonArray -is [System.Array]) { $JsonArray[0] } else { $JsonArray }
+        $MergedItem = Get-MergedJsonItem -JsonArray $JsonArray
         $TableName = [IO.Path]::GetFileNameWithoutExtension($JsonFilePath)
 
         if (-not (Test-SqlTableExists -TableName $TableName)) {
             Write-Host "Creating new table: $TableName"
-            New-SqlTableFromJson -TableName $TableName -FirstJsonItem $FirstJsonItem
+            New-SqlTableFromJson -TableName $TableName -FirstJsonItem $MergedItem
         } else {
             Write-Host "Updating existing table: $TableName"
             $CurrentSchema = Get-SqlTableSchema -TableName $TableName
-            $JsonSchema = $FirstJsonItem.PSObject.Properties.Name
+            $JsonSchema = $MergedItem.PSObject.Properties.Name
 
             # Add new columns found in JSON but not in SQL table
             foreach ($Column in $JsonSchema) {
                 if ($Column -notin $CurrentSchema) {
-                    $DataType = switch ($FirstJsonItem.$Column.GetType().Name) {
-                        "String" { "NVARCHAR(MAX)" }
-                        "Int32" { "INT" }
-                        "Boolean" { "BIT" }
-                        Default { "NVARCHAR(MAX)" }
-                    }
+                    $val = $MergedItem.$Column
+                    $DataType = if ($null -eq $val) { "NVARCHAR(MAX)" }
+                        else { switch ($val.GetType().Name) {
+                            "String"  { "NVARCHAR(MAX)" }
+                            "Int32"   { "BIGINT" }
+                            "Int64"   { "BIGINT" }
+                            "Boolean" { "BIT" }
+                            Default   { "NVARCHAR(MAX)" }
+                        } }
                     Add-SqlColumn -TableName $TableName -ColumnName $Column -DataType $DataType
                 }
             }
-
-            # Optionally, remove columns from SQL table not found in JSON
-            # Be cautious with this as it can lead to data loss
-            # foreach ($Column in $CurrentSchema) {
-            #     if ($Column -notin $JsonSchema -and $Column -ne 'Id' -and $Column -ne 'UpdateTimeStamp') {
-            #         Remove-SqlColumn -TableName $TableName -ColumnName $Column
-            #     }
-            # }
         }
     }
     catch {
@@ -407,17 +446,12 @@ function Update-SqlTableFromJson {
     }
 }
 
-# Make sure the V2 infrastructure (Computers, CollectionRuns, InstalledUpdates,
+# Make sure the infrastructure (Computers, CollectionRuns, InstalledUpdates,
 # cross-table views) exists before processing any JSON. Idempotent.
-Initialize-V2InfrastructureTables
+Initialize-InfrastructureTables
 
-# Loop through each JSON file in the folder and create/update tables.
-# CollectionRuns.json carries per-run metadata aggregated by ParseInventory.ps1
-# - the Update script loads it directly into dbo.CollectionRuns; not a JSON-
-# derived table.
-# InstalledUpdates.json is loaded via the differential MERGE in the Update
-# script; the table itself is created by Initialize-V2InfrastructureTables
-# above with the differential schema.
+# CollectionRuns + InstalledUpdates are loaded by the Update script, not
+# created from JSON shape.
 $SkipTables = @('CollectionRuns', 'InstalledUpdates')
 Get-ChildItem -Path $JsonFilesPath -Filter "*.json" | Where-Object {
     [IO.Path]::GetFileNameWithoutExtension($_.Name) -notin $SkipTables

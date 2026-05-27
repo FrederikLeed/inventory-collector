@@ -40,7 +40,7 @@ Get-ChildItem -Path $SampleDataPath -Filter "*.json" | Where-Object {
 
 # Create tables + insert
 & "$ScriptRoot\CreateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath 2>&1 | Out-Null
-& "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath $LogFile 2>&1 | Out-Null
+& "$ScriptRoot\UpdateSQLTableFromJSON.ps1" -SqlServer $SqlServer -Database $Database -JsonFilesPath $TrimmedDataPath -logFilePath $LogFile 2>&1 | Out-Null
 
 Write-Host "`n=== SELECT TOP 10 from each table ===`n" -ForegroundColor Cyan
 

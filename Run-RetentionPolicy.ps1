@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Applies Schema V2 retention policy: prunes old snapshots, marks silent
+    Applies the retention policy: prunes old snapshots, marks silent
     computers inactive, removes long-dead InstalledUpdates rows.
 
 .DESCRIPTION
@@ -13,8 +13,7 @@
        -RetainUninstalledDays (these represent KBs no longer installed
        anywhere, kept around for a grace period for audit).
     3. Mark Computers IsActive = 0 when LastSeenAt is older than
-       -InactiveAfterDays. The frontend's vStaleComputers view picks up the
-       count; vCurrent* views filter by IsActive implicitly via CollectionRuns.
+       -InactiveAfterDays.
 
     Idempotent. Safe to run any number of times.
 

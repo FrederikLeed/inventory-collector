@@ -3,6 +3,39 @@
 
 Add-Type -AssemblyName "System.Data"
 
+# Natural-key map: per-table column set that uniquely identifies a logical row
+# within a snapshot run. Always prefixed with RunId in indexes/dedup so a new
+# RunId creates a new snapshot without colliding with prior runs.
+$script:NaturalKeyMap = @{
+    "PersonalCertificates" = @("ComputerName", "Thumbprint")
+    "LocalUsers"           = @("ComputerName", "UserName")
+    "GroupMembers"         = @("ComputerName", "GroupName")
+    "AutoRunInfo"          = @("ComputerName", "Name")
+    "DiskSpace"            = @("ComputerName", "Drive")
+    "InstalledSoftware"    = @("ComputerName", "DisplayName", "DisplayVersion")
+    "UserProfileList"      = @("ComputerName", "Name")
+    "ShareAccessInfo"      = @("ComputerName", "ShareName")
+    "Services"             = @("ComputerName", "Name")
+    "ScheduledTasks"       = @("ComputerName", "TaskPath", "TaskName")
+    "ServerList"           = @("ComputerName", "Description")
+    "ServerAccess"         = @("ComputerName", "GroupName")
+    # InstalledUpdates uses (ComputerName, Title) but is not snapshot/append-only,
+    # so it's handled separately by Import-InstalledUpdatesDifferential.
+}
+
+function Get-NaturalKey {
+    <#
+    .SYNOPSIS
+    Returns the snapshot natural key for a fact table, always prefixed with RunId.
+    Tables not in $NaturalKeyMap fall back to (RunId, ComputerName).
+    #>
+    param ([Parameter(Mandatory)][string]$TableName)
+    if ($script:NaturalKeyMap.ContainsKey($TableName)) {
+        return @('RunId') + $script:NaturalKeyMap[$TableName]
+    }
+    return @('RunId', 'ComputerName')
+}
+
 function Test-SqlIdentifier {
     <#
     .SYNOPSIS
@@ -48,12 +81,13 @@ function Convert-ToSimpleFormat {
         return ($Value | ConvertTo-Json -Compress -Depth 10)
     }
 
-    # Long integers: convert to string for NVARCHAR columns
-    if ($Value -is [Int64]) {
-        return $Value.ToString()
+    # Strings + value types (incl. Int32/Int64/Boolean/DateTime) bind directly.
+    # Anything else (PSCustomObject, hashtable, foreign types) gets serialized
+    # so AddWithValue can bind it.
+    if ($Value -is [string] -or $Value -is [ValueType]) {
+        return $Value
     }
-
-    return $Value
+    return ($Value | ConvertTo-Json -Compress -Depth 10)
 }
 
 function Add-ParameterizedValues {
@@ -124,7 +158,7 @@ function Add-ParameterizedCondition {
         # natural-key existence check we want NULL to match NULL exactly, so
         # emit `IS NULL` for null values and skip adding a parameter. Without
         # this, append-only INSERT WHERE NOT EXISTS on rows with a NULL key
-        # column (e.g. RunId NULL in legacy fixtures) produces duplicates.
+        # column produces duplicates.
         if ($null -eq $value) {
             $conditions += "[$col] IS NULL"
         } else {

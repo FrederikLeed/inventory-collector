@@ -1,14 +1,14 @@
 # Demo helper: emulates N days of inventory collection history against the
-# anonymized test fixture so the V2 append-only / differential machinery can
-# be exercised at realistic scale.
+# anonymized test fixture so the append-only / differential machinery can be
+# exercised at realistic scale.
 #
 # Each round:
-#   1. Calls Build-V2Zips.ps1 with a backdated StartedAt
+#   1. Calls Build-Zips.ps1 with a backdated StartedAt
 #   2. Runs ParseInventory.ps1 over the resulting zips
-#   3. Runs UpdateSQLTableFromJSON_new.ps1 to load
+#   3. Runs UpdateSQLTableFromJSON.ps1 to load
 #
 # CreateSQLTableFromJSON.ps1 is run once at the top; subsequent rounds reuse
-# the same V2 tables (Update appends snapshots, InstalledUpdates differential
+# the same tables (Update appends snapshots, InstalledUpdates differential
 # refreshes LastSeenRunId/LastSeenAt).
 
 param(
@@ -28,7 +28,7 @@ $ZipPath        = 'C:\temp\inv-share-history'
 $ExtractPath    = 'C:\temp\inv-extract-history'
 $AggPath        = 'C:\temp\inv-agg-history'
 $LoadLog        = 'C:\temp\inv-history-load.log'
-$BuildScript    = Join-Path $PSScriptRoot 'Build-V2Zips.ps1'
+$BuildScript    = Join-Path $PSScriptRoot 'Build-Zips.ps1'
 
 $ConnectionString = "Server=$SqlServer;Integrated Security=True;"
 
@@ -62,7 +62,7 @@ for ($r = 1; $r -le $Rounds; $r++) {
         -extractPath $ExtractPath `
         -aggregateOutputPath $AggPath | Select-Object -Last 2
 
-    # Run CreateSQLTableFromJSON once on round 1 to land the V2 schema; later
+    # Run CreateSQLTableFromJSON once on round 1 to land the schema; later
     # rounds reuse the tables. (Subsequent runs are idempotent so calling it
     # every round also works but is wasteful.)
     if ($r -eq 1) {
@@ -70,7 +70,7 @@ for ($r = 1; $r -le $Rounds; $r++) {
             -SqlServer $SqlServer -Database $Database -JsonFilesPath $AggPath | Out-Null
     }
 
-    & "$ScriptRoot\UpdateSQLTableFromJSON_new.ps1" `
+    & "$ScriptRoot\UpdateSQLTableFromJSON.ps1" `
         -SqlServer $SqlServer -Database $Database -JsonFilesPath $AggPath -logFilePath $LoadLog | Out-Null
 
     $db = New-Object System.Data.SqlClient.SqlConnection("Server=$SqlServer;Database=$Database;Integrated Security=True;")

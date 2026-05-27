@@ -129,11 +129,11 @@ Outputs aggregated JSON files named after each metric (e.g., `SystemInfo.json`),
 
 ## Load Into SQL Server
 
-`CreateSQLTableFromJSON.ps1` creates (or evolves) a table per aggregated JSON file. `UpdateSQLTableFromJSON_new.ps1` performs idempotent upserts using a per-table key column map (`KeyColumnsMap`) so re-running the same data updates existing rows instead of duplicating them. Both scripts use parameterized `SqlCommand.Parameters` via the shared `SqlHelpers.ps1` module — no value is ever string-concatenated into the SQL text. Table and column names go through `Test-SqlIdentifier` which rejects anything outside `[A-Za-z0-9_ ]`.
+`CreateSQLTableFromJSON.ps1` creates the schema (infrastructure tables, fact tables with FK constraints, current-state views) idempotently — running it again on an existing database adds columns where new JSON fields appear but otherwise leaves the schema alone. `UpdateSQLTableFromJSON.ps1` upserts `Computers` and `CollectionRuns` from the run sidecar, then appends fact rows via `INSERT WHERE NOT EXISTS` so the same load is idempotent on re-run.
 
-The legacy `UpdateSQLTableFromJSON.ps1` (still in `legacy/`) and the Azure variants `*_azure.ps1` still use string-concatenated queries; only `UpdateSQLTableFromJSON_new.ps1` is wired into the production scheduler chain (`config.xml`). The Azure scripts are deferred for a full rewrite under Managed Identity auth — tracked in `TODO.md`.
+Both scripts use parameterized `SqlCommand.Parameters` via the shared `SqlHelpers.ps1` module — no value is ever string-concatenated into the SQL text. Table and column names go through `Test-SqlIdentifier` which rejects anything outside `[A-Za-z0-9_ ]`.
 
-Both SQL scripts exit non-zero if any record fails to apply, so `scheduler.ps1`'s step gating actually stops the chain on failure rather than continuing with partial data.
+Both SQL scripts exit non-zero if any record fails to apply, so `scheduler.ps1`'s step gating stops the chain on failure rather than continuing with partial data.
 
 ## Testing
 

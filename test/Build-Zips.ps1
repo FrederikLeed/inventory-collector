@@ -1,7 +1,7 @@
-# One-shot: convert aggregated post-ParseInventory JSON (the V1-shape fixture
-# at test/sample-data/InventoryParsed) into V2 zips in the shape GetInventory
-# emits. Used as a fixture builder for integration tests and for emulating
-# multi-day history (see Demo-History.ps1).
+# One-shot: convert aggregated post-ParseInventory JSON (the fixture at
+# test/sample-data/InventoryParsed) into per-Computer zips in the shape
+# GetInventory emits. Used as a fixture builder for integration tests and for
+# emulating multi-day history (see Demo-History.ps1).
 #
 #   <SourcePath>\<Metric>.json (rows for all servers concatenated)
 #     ->
