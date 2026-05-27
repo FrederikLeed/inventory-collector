@@ -1,0 +1,81 @@
+digraph G {
+  graph [
+    rankdir=TB
+    compound=true
+    splines=ortho
+    nodesep=0.35
+    ranksep=0.55
+    fontname="Helvetica"
+    labelloc=t
+    label=<<B>Inventory Collector — Pipeline</B><BR/><FONT POINT-SIZE="11" COLOR="#666666">Per-host endpoint script · central file share · daily SQL-side chain</FONT>>
+    fontsize=18
+    bgcolor="#FAFAFA"
+  ]
+  node [fontname="Helvetica" fontsize=10 shape=box style="rounded,filled" penwidth=1.5 margin="0.14,0.09"]
+  edge [fontname="Helvetica" fontsize=9 penwidth=1.5]
+
+  // -------------------------------------------------------------
+  //  Endpoint side
+  // -------------------------------------------------------------
+  subgraph cluster_endpoints {
+    label=<<B>Windows Server endpoints (fleet, ~10k hosts)</B>>; labeljust=l
+    style="rounded,dashed,filled"; fillcolor="#E8F5E9"; color="#2E7D32"; penwidth=2
+
+    ep1 [label=<<B>GetInventory.ps1</B><BR ALIGN="CENTER"/><FONT POINT-SIZE="8">
+      Runs locally (GPO · SCCM · Live Response)<BR ALIGN="LEFT"/>
+      Stamps every row with RunId<BR ALIGN="LEFT"/>
+      Emits 13 per-metric JSONs + sidecar<BR ALIGN="LEFT"/>
+      Zips them as &lt;ComputerName&gt;.zip<BR ALIGN="LEFT"/>
+    </FONT>>
+      fillcolor="#C8E6C9" color="#2E7D32"]
+  }
+
+  share [label=<<B>Central file share</B><BR ALIGN="CENTER"/><FONT POINT-SIZE="8">
+    \\server\InventoryData<BR ALIGN="LEFT"/>
+    Per-host zips · drop &amp; consume<BR ALIGN="LEFT"/>
+  </FONT>>
+    shape=folder fillcolor="#FFF9C4" color="#F9A825" penwidth=2]
+
+  // -------------------------------------------------------------
+  //  SQL host side — the daily chain
+  // -------------------------------------------------------------
+  subgraph cluster_sqlhost {
+    label=<<B>SQL host — scheduler.ps1 (daily Scheduled Task)</B>>; labeljust=l
+    style="rounded,dashed,filled"; fillcolor="#E3F2FD"; color="#1565C0"; penwidth=2
+
+    s1 [label=<<B>ParseInventory.ps1</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="8">zip → aggregated JSON per metric</FONT>>
+      fillcolor="#BBDEFB" color="#1565C0"]
+    s2 [label=<<B>CreateSQLTableFromJSON.ps1</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="8">Idempotent schema · indexes · vCurrent views</FONT>>
+      fillcolor="#BBDEFB" color="#1565C0"]
+    s3 [label=<<B>UpdateSQLTableFromJSON.ps1</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="8">SqlBulkCopy + dedup<BR ALIGN="LEFT"/>InstalledUpdates differential MERGE</FONT>>
+      fillcolor="#BBDEFB" color="#1565C0"]
+    s4 [label=<<B>Run-RetentionPolicy.ps1</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="8">Prune snapshots · deactivate silent hosts</FONT>>
+      fillcolor="#BBDEFB" color="#1565C0"]
+    s5 [label=<<B>Remove-ZipFiles.ps1</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="8">File-share cleanup</FONT>>
+      fillcolor="#BBDEFB" color="#1565C0"]
+
+    s1 -> s2 -> s3 -> s4 -> s5 [color="#1565C0"]
+  }
+
+  sql [label=<<B>SQL Server</B><BR ALIGN="CENTER"/><FONT POINT-SIZE="8">
+    Computers · CollectionRuns · InstalledUpdates<BR ALIGN="LEFT"/>
+    Per-metric snapshot fact tables<BR ALIGN="LEFT"/>
+    vCurrent&lt;Table&gt; views<BR ALIGN="LEFT"/>
+  </FONT>>
+    shape=cylinder fillcolor="#FFE0B2" color="#E65100" penwidth=2]
+
+  consumers [label=<<B>Consumers</B><BR ALIGN="CENTER"/><FONT POINT-SIZE="8">
+    Power BI · Grafana · Excel<BR ALIGN="LEFT"/>
+    Read vCurrent* views by default<BR ALIGN="LEFT"/>
+  </FONT>>
+    fillcolor="#F3E5F5" color="#7B1FA2"]
+
+  // -------------------------------------------------------------
+  //  Edges across the pipeline
+  // -------------------------------------------------------------
+  ep1   -> share [label="<ComputerName>.zip\nonce per day" color="#2E7D32"]
+  share -> s1    [label="reads zips" color="#F9A825" lhead=cluster_sqlhost]
+  s3    -> sql   [label="bulk insert + MERGE" color="#E65100"]
+  s4    -> sql   [label="retention" color="#E65100" style=dashed]
+  sql   -> consumers [label="SQL / OData" color="#7B1FA2"]
+}

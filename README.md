@@ -16,39 +16,12 @@ run unattended on a daily schedule. Tested at 10,000-server scale.
 
 ## Architecture
 
-```text
-   Windows Server (endpoint)
-   ┌─────────────────────┐
-   │  GetInventory.ps1   │  per-host script — GPO / SCCM / Live Response
-   └──────────┬──────────┘
-              │  <ComputerName>.zip
-              ▼
-   ┌─────────────────────┐
-   │   File share        │
-   └──────────┬──────────┘
-              │
-              ▼  (on the SQL host, scheduled task)
-   ┌─────────────────────┐
-   │   scheduler.ps1     │  reads config.xml, runs each step in order
-   └──────────┬──────────┘
-              │
-              ▼ runs:
-     ParseInventory.ps1            zip → aggregated JSON
-     CreateSQLTableFromJSON.ps1    idempotent schema + indexes + views
-     UpdateSQLTableFromJSON.ps1    SqlBulkCopy + dedup + differential MERGE
-     Run-RetentionPolicy.ps1       prune snapshots / deactivate silent hosts
-     Remove-ZipFiles.ps1           file-share cleanup
-              │
-              ▼
-   ┌─────────────────────┐
-   │  SQL Server         │  daily history + vCurrent views per metric
-   └─────────────────────┘
-```
+![Pipeline](docs/diagrams/architecture.png)
 
 Each collection gets a `RunId` (GUID) that's stamped on every row, so daily
 history is preserved and `vCurrent<TableName>` views always return the
 latest snapshot per host. See [brief.md](brief.md) for the full schema and
-the design rationale.
+the design rationale. Diagram source: [`docs/diagrams/architecture.dot`](docs/diagrams/architecture.dot) (Graphviz).
 
 ---
 
@@ -238,40 +211,6 @@ Expand-Archive .\test\sample-data\InventoryParsed.zip .\test\sample-data\Invento
 See [test/TESTING.md](test/TESTING.md) for the full walkthrough including
 the end-to-end loop (`GetInventory` → `ParseInventory` → SQL) on a single
 machine, and the fixture-refresh process (`Anonymize-InventoryData.ps1`).
-
----
-
-## Repository Layout
-
-```
-inventory-collector/
-├── brief.md                          design document (start here for depth)
-├── README.md                         (this file)
-├── TODO.md                           backlog
-├── GetInventory.ps1                  endpoint collector
-├── ParseInventory.ps1                zip → aggregated JSON
-├── CreateSQLTableFromJSON.ps1        schema + indexes + views
-├── UpdateSQLTableFromJSON.ps1        bulk load + differential MERGE
-├── Run-RetentionPolicy.ps1           prune + deactivate
-├── Remove-ZipFiles.ps1               file-share cleanup
-├── scheduler.ps1                     runs the config.xml chain
-├── config.xml                        script chain definition
-├── SqlHelpers.ps1                    parameterisation + natural keys
-├── NewCentralFileShare.ps1           one-time file-share setup
-├── *_azure.ps1                       Azure SQL variants (deferred rewrite)
-├── Device - Deploy Inventory Collector/  sample GPO for endpoint deploy
-└── test/
-    ├── TESTING.md
-    ├── Run-AllTests.ps1
-    ├── Test-Integration-LocalDB.ps1
-    ├── Test-SqlInjectionFix.ps1
-    ├── Build-Zips.ps1                fixture → per-server zips
-    ├── Demo-History.ps1              simulate N days of history
-    ├── Anonymize-InventoryData.ps1   fixture refresh tool
-    ├── setup-localdb.ps1
-    ├── Download-SqlLocalDB.ps1
-    └── sample-data/
-```
 
 ---
 
