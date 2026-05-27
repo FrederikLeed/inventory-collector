@@ -1,143 +1,223 @@
-# Computer Inventory PowerShell Script
+# Inventory Collector
+
+A PowerShell pipeline that collects Windows Server inventory data from every
+host in a fleet, aggregates it on a central file share, and loads it into a
+SQL Server database with daily history and a retention policy. Designed to
+run unattended on a daily schedule. Tested at 10,000-server scale.
 
 ![image](https://github.com/user-attachments/assets/8e220b79-dee2-4c43-aa21-6cdaf28f54aa)
 
-This PowerShell script is crafted to remotely collect a wide array of system and software-related information from one or multiple computers. It compiles this data into an inventory report in JSON format and facilitates its transfer to a centralized fileshare location for thorough analysis.
+**[Architecture](#architecture)** · **[Metrics](#metrics)** ·
+**[Endpoint deploy](#endpoint-deployment)** ·
+**[SQL host setup](#sql-host-setup)** · **[Testing](#testing)** ·
+**[brief.md](brief.md)** (deep design notes)
 
-## Features
+---
 
-- Collects a variety of metrics:
-  - Group memberships of specified groups.
-  - Basic system information including OS version, CPU, RAM, etc.
-  - Disk space details for each drive.
-  - List of installed software.
-  - Details about personal certificates in the LocalMachine\My certificate store.
-  - AutoRun application information.
-  - Share access details on the target computer.
-  - List local user profiles
-  - List services
+## Architecture
 
-- Capable of simultaneous execution on multiple remote computers.
+```text
+   Windows Server (endpoint)
+   ┌─────────────────────┐
+   │  GetInventory.ps1   │  per-host script — GPO / SCCM / Live Response
+   └──────────┬──────────┘
+              │  <ComputerName>.zip
+              ▼
+   ┌─────────────────────┐
+   │   File share        │
+   └──────────┬──────────┘
+              │
+              ▼  (on the SQL host, scheduled task)
+   ┌─────────────────────┐
+   │   scheduler.ps1     │  reads config.xml, runs each step in order
+   └──────────┬──────────┘
+              │
+              ▼ runs:
+     ParseInventory.ps1            zip → aggregated JSON
+     CreateSQLTableFromJSON.ps1    idempotent schema + indexes + views
+     UpdateSQLTableFromJSON.ps1    SqlBulkCopy + dedup + differential MERGE
+     Run-RetentionPolicy.ps1       prune snapshots / deactivate silent hosts
+     Remove-ZipFiles.ps1           file-share cleanup
+              │
+              ▼
+   ┌─────────────────────┐
+   │  SQL Server         │  daily history + vCurrent views per metric
+   └─────────────────────┘
+```
 
-- Allows customization of the metrics to be queried and the target computer name.
+Each collection gets a `RunId` (GUID) that's stamped on every row, so daily
+history is preserved and `vCurrent<TableName>` views always return the
+latest snapshot per host. See [brief.md](brief.md) for the full schema and
+the design rationale.
 
-- Includes error and information logging for troubleshooting purposes.
+---
 
-## Usage
+## Metrics
 
-1. **Script Execution**:
-   Run the script using your preferred [deployment method](#deployment-methods). The script will gather the specified metrics and save them in JSON format in separate folders.
+`GetInventory.ps1` runs locally on each Windows Server and emits one JSON
+per metric, plus a `_collection-meta.json` sidecar:
 
-2. **Data Management**:
-   The gathered data is then compressed, and the resulting zip file is moved to a central fileshare location. See [Setup Central Fileshare](#setup-central-fileshare) for more details.
+| Metric | What it captures |
+|---|---|
+| `SystemInfo` | OS version, CPU, RAM, GPRESULT lastApplied, etc. |
+| `DiskSpace` | Per-drive size and free space |
+| `InstalledSoftware` | Registry-enumerated installed software |
+| `InstalledUpdates` | Installed KBs — **differential** model with `FirstSeenAt` / `LastSeenAt` / `UninstalledAt` |
+| `Services` | All services + state + start type |
+| `ScheduledTasks` | All scheduled tasks + author + state |
+| `AutoRunInfo` | Registry / startup-folder autoruns |
+| `PersonalCertificates` | `LocalMachine\My` certificate metadata |
+| `LocalUsers` | Local user accounts |
+| `GroupMembers` | Administrators + Remote Desktop Users membership |
+| `ShareAccessInfo` | SMB share access entries |
+| `UserProfileList` | Local user profile folders |
+| `MPComputerStatus` | Defender / MpComputerStatus snapshot |
 
-3. **Data Parsing**:
-   Upon completion of data collection, process the data using [Parse Computer Inventory PowerShell Script Collected Data](#parse-computer-inventory-powershell-script-collected-data).
+All metrics other than `InstalledUpdates` use a **snapshot model**: every
+collection inserts a fresh set of rows tagged with the `RunId`.
+`InstalledUpdates` uses a differential model — one row per
+`(Computer, Title)` for the lifetime of that install, with `UninstalledAt`
+set when a KB stops being reported. This collapses ~1.2 B rows (snapshot
+at 10k servers × 90 days) down to ~13 M while preserving "currently
+installed" semantics.
 
-## Setup Central Fileshare
+---
 
-### Folder and File Share Setup Script
+## Endpoint Deployment
 
-Use the "NewCentralFileShare.ps1" script to create a fileshare on a fileserver accessible by the computers intended to run this script.
+### Group Policy with Scheduled Task
 
-#### Overview
-
-This script sets up a folder structure and configures sharing and NTFS permissions for efficient inventory data management. It automates the creation of a main folder and a subfolder, shares the main folder with specific access rights, and sets NTFS permissions for domain computers and administrators.
-
-#### Features
-
-- **Folder Creation**: Automatically creates a main folder and a subfolder if not already present.
-- **SMB Sharing**: Shares the main folder on the network with 'Change' permissions for specified user groups.
-- **NTFS Permissions**: Configures specific NTFS permissions for both the main and subfolder for various user groups.
-
-#### Script Details
-
-1. **Folder Paths**:
-   - `$FolderPath`: Path for the main folder.
-   - `$SubFolderPath`: Path for the subfolder within the main folder.
-2. **Share Setup**:
-   - `$ShareName`: Name for the network share of the folder.
-   - Shares the main folder with 'Change' permission for 'Everyone'.
-3. **NTFS Permissions**:
-   - Sets specific permissions for 'Domain Computers' and 'Everyone'.
-   - Grants 'Administrators' and 'SYSTEM' full control over both folders.
-   - Allows customization of inheritance and rights through the `Set-NTFSPermissions` function.
-
-#### Example Usage
-
-1. Define `$FolderPath`, `$SubFolderPath`, and `$ShareName` as required.
-2. Run the script to create the folders, share the main folder, and set NTFS permissions.
-
-## Deployment Methods
-
-### 1. Group Policy with Scheduled Task
-
-Import the sample GPO provided in this repository, "Device - Deploy Inventory Collector". Remember to update the script path.
+Import the sample GPO `Device - Deploy Inventory Collector` and update the
+script path inside it to wherever you keep `GetInventory.ps1`.
 
 ![Alt text](image.png)
 
-### 2. Defender For Endpoint Live Response Integration
+### Defender For Endpoint Live Response
 
-The script is compatible with Defender For Endpoint Live Response. Ensure Live Response is set up (See Documentation).
+The script is compatible with Defender For Endpoint Live Response. Enable
+unsigned script execution at
+**security.microsoft.com → Settings → Endpoints → Advanced features**,
+upload the script to the library, and run it from a device's Live Response
+session. Background context: [Incident Response Part 3: Leveraging Live
+Response](https://kqlquery.com/posts/leveraging-live-response/).
 
-Refer to the blog article for more on using Custom Script in Live Response: [Incident Response Part 3: Leveraging Live Response](https://kqlquery.com/posts/leveraging-live-response/).
+### SCCM / ConfigMGR / other deployment tooling
 
-To run unsigned scripts in Live Response:
+`GetInventory.ps1` is self-contained — no dependencies beyond PowerShell
+5.1 and Windows Server. Any deployment mechanism that can run a single
+`.ps1` is fine.
 
-- Navigate to security.microsoft.com
-- Go to Settings > Endpoints > Advanced Features
-- Enable Live Response and unsigned script execution
+### Endpoint script parameters
 
-Execute the script:
+```powershell
+GetInventory.ps1 `
+    -ComputerName          $env:computerName `        # default: local host
+    -centralFilesharePath  '\\server\InventoryData'   # default in script
+```
 
-- Visit the device page and initiate a Live Response session
-- Upload the script to the library
-- Use the ***run*** command to execute the script
+The script writes one zip named `<ComputerName>.zip` to the file share. If
+the zip already exists, the script exits silently — safe to re-run on the
+same day.
 
-### 3. Other Methods
+---
 
-Deploy using software like ConfigMGR or other deployment tools.
+## File Share Setup
 
-## Parse Computer Inventory PowerShell Script Collected Data
+`NewCentralFileShare.ps1` creates the receiving file share on a Windows
+file server:
 
-### Description
+- Creates a main folder and a subfolder if missing.
+- Shares the main folder with `Change` permission for the user groups you
+  specify.
+- Sets NTFS permissions for `Domain Computers` (write), `Everyone`,
+  `Administrators`, and `SYSTEM`.
 
-`ParseInventory.ps1` processes and aggregates inventory data from multiple servers. It handles zipped files containing JSON files of various system metrics, compiling the data into separate JSON files for each metric type.
+Edit `$FolderPath`, `$SubFolderPath`, and `$ShareName` at the top of the
+script, then run on the file server.
 
-### Functionality
+---
 
-- **Dynamic Parsing**: Handles JSON files in zip archives, eliminating the need for predefined metrics.
-- **Flexible Aggregation**: Aggregates data based on dynamically determined metric names from folder names.
-- **Error Handling**: Per-step try/catch with `$script:hasErrors` tracking; exits non-zero on any extraction, parse, or cleanup failure so the scheduler chain stops on real failures instead of silently continuing.
+## SQL Host Setup
 
-### Execution Instructions
+The server-side chain runs on a single Windows box that has SQL Server
+access.
 
-1. **Set Parameters** (all mandatory):
-    - `$fileSharePath`: Path to the fileshare with zip files.
-    - `$extractPath`: Temporary path for extracting zip contents.
-    - `$aggregateOutputPath`: Path for saving aggregated JSON files.
+1. Install SQL Server (Standard / Express / LocalDB all work — LocalDB is
+   for testing only).
+2. Create the target database. The chain creates all tables, indexes, and
+   views on first run — no manual schema.
+3. Copy the script chain to a folder on the SQL host.
+4. Edit `config.xml`: set paths, `SqlServer`, and `Database` for each step.
+5. Register `scheduler.ps1` as a daily Scheduled Task.
 
-2. **Run the Script**:
-   Execute in PowerShell. It processes each zip file, extracting contents and aggregating data into separate JSON files. A `Summary:` line at the end of stdout reports counts of zips/JSON files processed vs failed.
+### What the chain does
 
-3. **Check Results**:
-   Inspect the `$aggregateOutputPath` for aggregated JSON files.
+| Step | Script | Notes |
+|---|---|---|
+| 1 | `ParseInventory.ps1` | Walks the file share, expands outer + inner zips, aggregates rows from every host into one JSON per metric in `$aggregateOutputPath`. Per-step try/catch with `$script:hasErrors` — the chain exits non-zero on real failures rather than silently continuing. |
+| 2 | `CreateSQLTableFromJSON.ps1` | Idempotent. Creates `Computers`, `CollectionRuns`, `InstalledUpdates` infrastructure tables, then one snapshot fact table per JSON file with auto-discovered columns, FK constraints, `UX_<Table>_Natural` UNIQUE index, and a `vCurrent<TableName>` view. Adds columns via `ALTER TABLE` if later JSONs introduce new properties. |
+| 3 | `UpdateSQLTableFromJSON.ps1` | Bulk-loads each fact table via `SqlBulkCopy` into a `#temp` staging table, deduplicates with `ROW_NUMBER()`, then `INSERT ... WHERE NOT EXISTS` into the target. `InstalledUpdates` uses a single set-based `MERGE`. |
+| 4 | `Run-RetentionPolicy.ps1` | Three idempotent actions: drop `CollectionRuns` older than the most recent N per Computer (FK cascade prunes facts), drop `InstalledUpdates` whose `UninstalledAt` is older than M days, set `Computers.IsActive = 0` for hosts that haven't reported in K days. |
+| 5 | `Remove-ZipFiles.ps1` | Deletes processed zips from the file share. |
 
-### Output
+### Consumer query patterns
 
-Outputs aggregated JSON files named after each metric (e.g., `SystemInfo.json`), containing combined data from all processed servers for that metric.
+Power BI / Grafana / Excel / anything that speaks SQL — start with the
+views, not the raw fact tables:
 
-## Load Into SQL Server
+| View | Returns |
+|---|---|
+| `vCurrent<TableName>` | Latest-RunId snapshot per Computer (one per snapshot fact table). |
+| `vCurrentInstalledUpdates` | `InstalledUpdates WHERE UninstalledAt IS NULL`. |
+| `vStaleComputers` | Active Computers whose `LastSeenAt` is older than 25 hours. |
 
-`CreateSQLTableFromJSON.ps1` creates the schema (infrastructure tables, fact tables with FK constraints, current-state views) idempotently — running it again on an existing database adds columns where new JSON fields appear but otherwise leaves the schema alone. `UpdateSQLTableFromJSON.ps1` upserts `Computers` and `CollectionRuns` from the run sidecar, then appends fact rows via `INSERT WHERE NOT EXISTS` so the same load is idempotent on re-run.
+Trend visuals read the raw fact tables and filter by `RunId` or join on
+`CollectionRuns`. The fact tables keep daily history until the retention
+policy drops them.
 
-Both scripts use parameterized `SqlCommand.Parameters` via the shared `SqlHelpers.ps1` module — no value is ever string-concatenated into the SQL text. Table and column names go through `Test-SqlIdentifier` which rejects anything outside `[A-Za-z0-9_ ]`.
+### Security
 
-Both SQL scripts exit non-zero if any record fails to apply, so `scheduler.ps1`'s step gating stops the chain on failure rather than continuing with partial data.
+All SQL operations use parameterised `SqlCommand.Parameters` via the
+shared `SqlHelpers.ps1` module — values are never string-concatenated
+into SQL text. Table and column names go through `Test-SqlIdentifier`,
+which rejects anything outside `[A-Za-z0-9_ ]`. SQL-injection payloads
+are covered by the integration test suite.
+
+The Azure SQL variants `*_azure.ps1` still use the legacy
+string-concatenated pattern and the old per-row INSERT path. They're
+slated for a full rewrite under Managed Identity auth — see [TODO.md](TODO.md).
+
+---
+
+## Scale and Performance
+
+Measured end-to-end on LocalDB, single machine, modest hardware:
+
+| Scale | Update step | Peak RAM |
+|---|---:|---:|
+| 1k servers / 13k rows | 15 s | ~200 MB |
+| 10k servers / 196k rows | 125 s | ~700 MB |
+| 10k servers + 5.3M `InstalledUpdates` rows | 156 s | ~700 MB |
+| 10k servers / ~13M IU rows (projected, real customer density) | ~7 min | ~700 MB |
+
+Two things keep the loader scaling linearly:
+
+1. **`SqlBulkCopy` + staging table + set-based dedup** instead of per-row
+   `INSERT` — moves the dominant cost from network round-trips to index
+   maintenance, ~4-5× throughput at any scale.
+2. **Streaming JSON reader for `InstalledUpdates`** — a compiled C#
+   `IDataReader` over a tokeniser; the full JSON is never materialised
+   in memory. Peak RAM stays flat regardless of input size.
+
+For the schema, idempotency, retention, and storage-size projections, see
+[brief.md](brief.md).
+
+---
 
 ## Testing
 
-The `test/` folder contains LocalDB-based unit + integration tests plus an anonymized customer dataset. See [test/TESTING.md](test/TESTING.md) for the full setup, but the short version:
+The `test/` folder contains LocalDB-backed unit + integration tests plus
+an anonymised customer fixture (1,059 servers, ~1.7 MB).
 
 ```powershell
 # One-time setup
@@ -148,4 +228,70 @@ Expand-Archive .\test\sample-data\InventoryParsed.zip .\test\sample-data\Invento
 .\test\Run-AllTests.ps1
 ```
 
-The integration test exercises the full create + update path against a real LocalDB instance and asserts SQL injection payloads are stored as literal data, schema evolution works (ALTER TABLE branch), and re-runs don't duplicate rows.
+- **`Test-Integration-LocalDB.ps1`** — 10+ end-to-end tests against a
+  real LocalDB instance using the anonymised fixture. Covers schema
+  creation, idempotent re-loads, schema evolution (ALTER TABLE branch),
+  SQL-injection payloads, the `InstalledUpdates` differential model,
+  and `vCurrent*` views.
+- **`Test-SqlInjectionFix.ps1`** — 64 unit tests for `SqlHelpers.ps1`.
+
+See [test/TESTING.md](test/TESTING.md) for the full walkthrough including
+the end-to-end loop (`GetInventory` → `ParseInventory` → SQL) on a single
+machine, and the fixture-refresh process (`Anonymize-InventoryData.ps1`).
+
+---
+
+## Repository Layout
+
+```
+inventory-collector/
+├── brief.md                          design document (start here for depth)
+├── README.md                         (this file)
+├── TODO.md                           backlog
+├── GetInventory.ps1                  endpoint collector
+├── ParseInventory.ps1                zip → aggregated JSON
+├── CreateSQLTableFromJSON.ps1        schema + indexes + views
+├── UpdateSQLTableFromJSON.ps1        bulk load + differential MERGE
+├── Run-RetentionPolicy.ps1           prune + deactivate
+├── Remove-ZipFiles.ps1               file-share cleanup
+├── scheduler.ps1                     runs the config.xml chain
+├── config.xml                        script chain definition
+├── SqlHelpers.ps1                    parameterisation + natural keys
+├── NewCentralFileShare.ps1           one-time file-share setup
+├── *_azure.ps1                       Azure SQL variants (deferred rewrite)
+├── Device - Deploy Inventory Collector/  sample GPO for endpoint deploy
+└── test/
+    ├── TESTING.md
+    ├── Run-AllTests.ps1
+    ├── Test-Integration-LocalDB.ps1
+    ├── Test-SqlInjectionFix.ps1
+    ├── Build-Zips.ps1                fixture → per-server zips
+    ├── Demo-History.ps1              simulate N days of history
+    ├── Anonymize-InventoryData.ps1   fixture refresh tool
+    ├── setup-localdb.ps1
+    ├── Download-SqlLocalDB.ps1
+    └── sample-data/
+```
+
+---
+
+## Status
+
+Production-ready for on-prem SQL Server (Windows authentication).
+
+Open items tracked in [TODO.md](TODO.md):
+
+- Azure SQL scripts (`*_azure.ps1`) need a full rewrite — Managed Identity
+  auth, parameterised queries, `SqlBulkCopy` path.
+
+Known constraints documented in [brief.md](brief.md):
+
+- `ServerAccess`, `ServerList`, `ServerOverview`, `ADServers` are not
+  produced by `GetInventory.ps1`; a customer-specific external collector
+  drops them into the share. Schema mismatch on `ComputerName` is handled
+  defensively but should be fixed upstream.
+- LocalDB `tempdb` pressure on 5M+ row `MERGE` ops — production SQL Server
+  with appropriately sized tempdb is unaffected.
+- PowerShell 5.1 is the production target; PS 7+ works but falls back to
+  a slower in-PowerShell `DataTable` build for the `InstalledUpdates`
+  streaming reader.

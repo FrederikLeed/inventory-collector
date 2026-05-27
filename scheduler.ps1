@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-A PowerShell framework for executing a series of scripts specified in an XML file named 'config.xml' located in the same directory as the script, executed in a predetermined order with dynamic parameter passing, logging, and error handling.
+Runs the chain of scripts defined in config.xml in order, with parameter passing, per-step logging, and fail-fast behaviour.
 
 .DESCRIPTION
-This script provides a robust framework for scheduling and executing multiple PowerShell scripts based on an external XML configuration file named 'config.xml'. It supports passing custom parameters to each script and enhances execution with detailed logging and comprehensive error handling. The framework ensures continued execution even if individual scripts fail, making it ideal for complex automation tasks.
+Reads the XML configuration named 'config.xml' (overridable via -xmlFilePath) and invokes each <Script> entry in document order with its declared <Parameter> values. Each step's stdout is appended to a log file (default: ExecutionLog.log next to the script). The chain stops at the first step that exits non-zero — this is intentional so downstream steps don't run on partial data. Suitable for a Scheduled Task daily trigger.
 
 .EXAMPLE
 # Example usage of the script
